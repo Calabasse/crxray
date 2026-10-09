@@ -72,6 +72,21 @@ test('downloadFromUrl times out a hanging response', async () => {
   );
 });
 
+test('downloadFromUrl times out when headers arrive but the body stalls', { timeout: 5000 }, async () => {
+  await withServer(
+    (req, res) => {
+      res.writeHead(200, { 'Content-Length': '1000' });
+      res.write('partial'); // headers + some bytes, then never finish
+    },
+    async (url) => {
+      await assert.rejects(
+        downloadFromUrl(url, { isAllowedHost: () => true, timeoutMs: 50 }),
+        /timed out/
+      );
+    }
+  );
+});
+
 test('downloadFromUrl surfaces a 404 as "not found"', async () => {
   await withServer(
     (req, res) => res.writeHead(404).end(),

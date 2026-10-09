@@ -36,42 +36,44 @@ export async function downloadFromUrl(
   { timeoutMs = DOWNLOAD_TIMEOUT_MS, maxBytes = MAX_CRX_SIZE, isAllowedHost = () => true, id = url } = {}
 ) {
   const controller = new AbortController();
+  // The timer must stay armed through the full body read, not just until
+  // the response headers arrive — a server that sends headers and then
+  // stalls the body must still be caught by this deadline.
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  let res;
   try {
-    res = await fetch(url, { redirect: 'follow', signal: controller.signal });
+    const res = await fetch(url, { redirect: 'follow', signal: controller.signal });
+
+    if (res.status === 204 || res.status === 404) {
+      throw new Error(`Extension ${id} not found. It may be unlisted, removed, or the ID may be wrong.`);
+    }
+    if (!res.ok) {
+      throw new Error(`Download failed for ${id}: HTTP ${res.status} ${res.statusText}`);
+    }
+
+    const host = new URL(res.url).hostname;
+    if (!isAllowedHost(host)) {
+      throw new Error(`Refusing to use download from untrusted host "${host}".`);
+    }
+
+    const declaredLength = Number(res.headers.get('content-length') ?? 0);
+    if (declaredLength > maxBytes) {
+      throw new Error(`Download for ${id} declares ${declaredLength} bytes, over the ${maxBytes}-byte limit.`);
+    }
+
+    const buf = await readWithLimit(res, maxBytes, id);
+    if (buf.length === 0) {
+      throw new Error(`Empty response for ${id} — the extension may not be available.`);
+    }
+    return buf;
   } catch (err) {
-    if (err.name === 'AbortError') {
+    if (err.name === 'AbortError' || controller.signal.aborted) {
       throw new Error(`Download timed out after ${timeoutMs / 1000}s for ${id}.`);
     }
     throw err;
   } finally {
     clearTimeout(timer);
   }
-
-  if (res.status === 204 || res.status === 404) {
-    throw new Error(`Extension ${id} not found. It may be unlisted, removed, or the ID may be wrong.`);
-  }
-  if (!res.ok) {
-    throw new Error(`Download failed for ${id}: HTTP ${res.status} ${res.statusText}`);
-  }
-
-  const host = new URL(res.url).hostname;
-  if (!isAllowedHost(host)) {
-    throw new Error(`Refusing to use download from untrusted host "${host}".`);
-  }
-
-  const declaredLength = Number(res.headers.get('content-length') ?? 0);
-  if (declaredLength > maxBytes) {
-    throw new Error(`Download for ${id} declares ${declaredLength} bytes, over the ${maxBytes}-byte limit.`);
-  }
-
-  const buf = await readWithLimit(res, maxBytes, id);
-  if (buf.length === 0) {
-    throw new Error(`Empty response for ${id} — the extension may not be available.`);
-  }
-  return buf;
 }
 
 async function readWithLimit(res, maxBytes, id) {
