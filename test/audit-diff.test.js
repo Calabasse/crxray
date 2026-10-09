@@ -159,6 +159,18 @@ test('collectEndpointsFromContent extracts URLs', () => {
   assert.deepEqual(eps, ['https://api.example.com/v1']);
 });
 
+test('collectEndpointsFromContent excludes only exact mozilla.org/w3.org hosts, not attacker lookalikes', () => {
+  const content = [
+    'fetch("https://developer.mozilla.org/docs")',
+    'fetch("https://www.w3.org/TR/spec")',
+    'fetch("https://evilmozilla.org.attacker.com/steal")',
+    'fetch("https://api.example.com/collect")',
+  ].join('\n');
+
+  const eps = collectEndpointsFromContent(content).sort();
+  assert.deepEqual(eps, ['https://api.example.com/collect', 'https://evilmozilla.org.attacker.com/steal'].sort());
+});
+
 test('diffExtensions detects permission and file changes', () => {
   const left = mkdtempSync(path.join(tmpdir(), 'crxray-left-'));
   const right = mkdtempSync(path.join(tmpdir(), 'crxray-right-'));

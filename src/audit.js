@@ -65,13 +65,20 @@ const SUSPICIOUS_PATTERNS = [
 
 const URL_RE = /https?:\/\/[^\s"'`)]+/g;
 
+const EXCLUDED_HOST_SUFFIXES = ['mozilla.org', 'w3.org'];
+
 export function collectEndpointsFromContent(content) {
   const endpoints = [];
   for (const url of content.match(URL_RE) ?? []) {
     const cleaned = url.replace(/[),.;]+$/, '');
-    if (!cleaned.includes('mozilla.org') && !cleaned.includes('w3.org')) {
-      endpoints.push(cleaned);
+    let host;
+    try {
+      host = new URL(cleaned).hostname;
+    } catch {
+      continue; // not a well-formed URL (e.g. trailing garbage survived cleanup)
     }
+    const excluded = EXCLUDED_HOST_SUFFIXES.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+    if (!excluded) endpoints.push(cleaned);
   }
   return endpoints;
 }
