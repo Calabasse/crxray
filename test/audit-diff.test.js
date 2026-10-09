@@ -99,6 +99,31 @@ test('auditExtension scores optional_host_permissions and flags a custom update_
   rmSync(dir, { recursive: true });
 });
 
+test('scanSource flags fetch, WebSocket, sendMessage, and executeScript', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'bg.js': [
+        'fetch("https://api.example.com/collect");',
+        'const ws = new WebSocket("wss://api.example.com/socket");',
+        'chrome.runtime.sendMessage({ type: "ping" });',
+        'chrome.scripting.executeScript({ target: { tabId: 1 }, func: () => {} });',
+      ].join('\n'),
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const patterns = audit.findings.map((f) => f.pattern);
+  assert.ok(patterns.includes('fetch()'));
+  assert.ok(patterns.includes('new WebSocket()'));
+  assert.ok(patterns.includes('chrome.runtime.sendMessage/connect'));
+  assert.ok(patterns.includes('chrome.scripting.executeScript / tabs.executeScript'));
+  rmSync(dir, { recursive: true });
+});
+
 test('collectEndpointsFromContent extracts URLs', () => {
   const eps = collectEndpointsFromContent('fetch("https://api.example.com/v1")');
   assert.deepEqual(eps, ['https://api.example.com/v1']);

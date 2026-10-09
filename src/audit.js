@@ -41,6 +41,26 @@ const SUSPICIOUS_PATTERNS = [
   { id: 'send-beacon', label: 'navigator.sendBeacon()', re: /\bnavigator\.sendBeacon\s*\(/g, severity: 'medium' },
   { id: 'xhr', label: 'XMLHttpRequest', re: /\bnew\s+XMLHttpRequest\s*\(/g, severity: 'low' },
   { id: 'dynamic-import', label: 'dynamic import()', re: /\bimport\s*\(/g, severity: 'low' },
+  { id: 'fetch', label: 'fetch()', re: /\bfetch\s*\(/g, severity: 'low' },
+  { id: 'websocket', label: 'new WebSocket()', re: /\bnew\s+WebSocket\s*\(/g, severity: 'medium' },
+  {
+    id: 'runtime-send-message',
+    label: 'chrome.runtime.sendMessage/connect',
+    re: /\bchrome\.runtime\.(sendMessage|connect)\s*\(/g,
+    severity: 'low',
+  },
+  {
+    id: 'execute-script',
+    label: 'chrome.scripting.executeScript / tabs.executeScript',
+    re: /\b(chrome\.scripting\.executeScript|chrome\.tabs\.executeScript)\s*\(/g,
+    severity: 'high',
+  },
+  {
+    id: 'external-script-tag',
+    label: 'dynamically-created <script> tag',
+    re: /createElement\s*\(\s*['"]script['"]\s*\)/g,
+    severity: 'medium',
+  },
 ];
 
 const URL_RE = /https?:\/\/[^\s"'`)]+/g;
