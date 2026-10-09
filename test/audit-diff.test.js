@@ -124,6 +124,36 @@ test('scanSource flags fetch, WebSocket, sendMessage, and executeScript', () => 
   rmSync(dir, { recursive: true });
 });
 
+test('auditExtension does not double-count a bundle superseded by its .unpacked copy', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = {
+    name: 'Bundled Ext', version: '1.0.0', manifest_version: 3,
+    permissions: ['storage'],
+    background: { service_worker: 'bundle.js' },
+  };
+  const summary = {
+    name: 'Bundled Ext', version: '1.0.0', permissions: ['storage'],
+    optionalPermissions: [], hostPermissions: [], contentScripts: [], background: 'bundle.js',
+  };
+  makeExtension(dir, {
+    manifest,
+    files: { 'bundle.js': 'eval("original"); fetch("https://original.example.com");' },
+  });
+  // Simulate what deobfuscateDirectory leaves behind after unpacking a bundle.
+  mkdirSync(path.join(dir, 'bundle.unpacked'));
+  writeFileSync(
+    path.join(dir, 'bundle.unpacked', 'module.js'),
+    'eval("original"); fetch("https://original.example.com");'
+  );
+
+  const audit = auditExtension(dir, manifest, summary);
+  const evalFindings = audit.findings.filter((f) => f.pattern === 'eval()');
+  assert.equal(evalFindings.length, 1); // only from bundle.unpacked/module.js, not bundle.js too
+  assert.equal(evalFindings[0].file, 'bundle.unpacked/module.js');
+  assert.deepEqual(audit.endpoints, ['https://original.example.com']);
+  rmSync(dir, { recursive: true });
+});
+
 test('collectEndpointsFromContent extracts URLs', () => {
   const eps = collectEndpointsFromContent('fetch("https://api.example.com/v1")');
   assert.deepEqual(eps, ['https://api.example.com/v1']);
