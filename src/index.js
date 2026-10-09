@@ -2,7 +2,7 @@ import { writeFileSync, rmSync, existsSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { parseExtensionRef } from './parse.js';
 import { downloadCrx } from './download.js';
-import { crxToZip } from './crx.js';
+import { crxToZip, verifyCrx3Signature } from './crx.js';
 import { extractZip } from './zip.js';
 import { readManifest, summarizeManifest } from './manifest.js';
 import { auditExtension } from './audit.js';
@@ -15,7 +15,7 @@ import { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
 
 export { parseExtensionRef } from './parse.js';
 export { downloadCrx, crxUrl } from './download.js';
-export { crxToZip } from './crx.js';
+export { crxToZip, verifyCrx3Signature } from './crx.js';
 export { extractZip, readZipEntries } from './zip.js';
 export { readManifest, summarizeManifest } from './manifest.js';
 export { auditExtension, formatAuditReport } from './audit.js';
@@ -76,7 +76,7 @@ export async function crxray(input, opts = {}) {
     mapsRemoved = removeSourceMaps(outDir);
   }
 
-  const postProcess = await runPostProcess(outDir, manifest, summary, opts);
+  const postProcess = await runPostProcess(outDir, manifest, summary, opts, { crx, id });
 
   return {
     id,
@@ -127,7 +127,7 @@ async function resolveDiffTarget(input, opts) {
   return result.outDir;
 }
 
-async function runPostProcess(outDir, manifest, summary, opts) {
+async function runPostProcess(outDir, manifest, summary, opts, { crx, id } = {}) {
   const result = {};
 
   if (opts.deobfuscate) {
@@ -144,6 +144,9 @@ async function runPostProcess(outDir, manifest, summary, opts) {
 
   if (opts.audit) {
     result.audit = auditExtension(outDir, manifest, summary);
+    if (crx && id) {
+      result.audit.signature = verifyCrx3Signature(crx, id);
+    }
     writeFileSync(path.join(outDir, '.crxray-audit.json'), JSON.stringify(result.audit, null, 2));
   }
 

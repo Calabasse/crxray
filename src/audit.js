@@ -237,6 +237,13 @@ export function formatAuditReport(audit) {
   lines.push(`${riskEmoji(audit.risk.level)}  ${riskLabel} RISK (score ${audit.risk.score})`);
   lines.push('');
 
+  if (audit.signature) {
+    lines.push(
+      `Signature: ${audit.signature.verified ? '✅ verified store-signed CRX3' : `⚠️ unverifiable (${audit.signature.reason})`}`
+    );
+    lines.push('');
+  }
+
   if (audit.name) {
     lines.push(`  ${audit.name}${audit.version ? ` v${audit.version}` : ''}`);
     lines.push('');
