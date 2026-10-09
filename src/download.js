@@ -1,6 +1,20 @@
 // These are the same update endpoints the browsers themselves poll for
 // extension installs/updates, so they serve the canonical CRX for an ID.
 const CHROME_VERSION = '131.0.6778.86';
+const DOWNLOAD_TIMEOUT_MS = 30_000;
+const MAX_CRX_SIZE = 200 * 1024 * 1024; // 200MB
+
+// Hosts the CRX download is allowed to land on after following redirects.
+// clients2.google.com / edge.microsoft.com are the endpoints we request
+// directly; the others are the CDN hosts those endpoints actually
+// redirect to, confirmed by a live request on 2026-10-09 (chrome ->
+// clients2.googleusercontent.com, edge -> *.delivery.mp.microsoft.com).
+// If a store rotates its CDN host this will start throwing "untrusted
+// host <name>" — update the entry below for that store.
+const ALLOWED_HOSTS = {
+  chrome: (host) => host === 'clients2.google.com' || host === 'clients2.googleusercontent.com',
+  edge: (host) => host === 'edge.microsoft.com' || host.endsWith('.delivery.mp.microsoft.com'),
+};
 
 export function crxUrl(id, store = 'chrome') {
   if (store === 'edge') {
@@ -12,25 +26,75 @@ export function crxUrl(id, store = 'chrome') {
 }
 
 /**
- * Download the CRX for an extension ID. Returns a Buffer.
+ * Fetch a URL with a timeout, a response-size cap, and a check that the
+ * final (post-redirect) host passes `isAllowedHost`. Exported separately
+ * from downloadCrx so tests can point it at a local server instead of the
+ * real store endpoints.
  */
-export async function downloadCrx(id, store = 'chrome') {
-  const url = crxUrl(id, store);
-  const res = await fetch(url, { redirect: 'follow' });
+export async function downloadFromUrl(
+  url,
+  { timeoutMs = DOWNLOAD_TIMEOUT_MS, maxBytes = MAX_CRX_SIZE, isAllowedHost = () => true, id = url } = {}
+) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res;
+  try {
+    res = await fetch(url, { redirect: 'follow', signal: controller.signal });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error(`Download timed out after ${timeoutMs / 1000}s for ${id}.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (res.status === 204 || res.status === 404) {
-    throw new Error(
-      `Extension ${id} not found on the ${store} store. ` +
-        'It may be unlisted, removed, or the ID may be wrong.'
-    );
+    throw new Error(`Extension ${id} not found. It may be unlisted, removed, or the ID may be wrong.`);
   }
   if (!res.ok) {
     throw new Error(`Download failed for ${id}: HTTP ${res.status} ${res.statusText}`);
   }
 
-  const buf = Buffer.from(await res.arrayBuffer());
+  const host = new URL(res.url).hostname;
+  if (!isAllowedHost(host)) {
+    throw new Error(`Refusing to use download from untrusted host "${host}".`);
+  }
+
+  const declaredLength = Number(res.headers.get('content-length') ?? 0);
+  if (declaredLength > maxBytes) {
+    throw new Error(`Download for ${id} declares ${declaredLength} bytes, over the ${maxBytes}-byte limit.`);
+  }
+
+  const buf = await readWithLimit(res, maxBytes, id);
   if (buf.length === 0) {
     throw new Error(`Empty response for ${id} — the extension may not be available.`);
   }
   return buf;
+}
+
+async function readWithLimit(res, maxBytes, id) {
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error(`Download for ${id} exceeded the ${maxBytes}-byte limit.`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Download the CRX for an extension ID. Returns a Buffer.
+ */
+export async function downloadCrx(id, store = 'chrome') {
+  const url = crxUrl(id, store);
+  return downloadFromUrl(url, { id, isAllowedHost: ALLOWED_HOSTS[store] ?? (() => false) });
 }
