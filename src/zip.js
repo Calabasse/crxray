@@ -101,16 +101,34 @@ export function readZipEntries(buf) {
         const raw = buf.subarray(start, start + compressedSize);
 
         let out;
-        if (method === 0) out = Buffer.from(raw);
-        else if (method === 8) out = inflateRawSync(raw);
-        else throw new Error(`Unsupported compression method ${method} for ${name}.`);
+        if (method === 0) {
+          out = Buffer.from(raw);
+        } else if (method === 8) {
+          try {
+            // maxOutputLength makes zlib itself stop allocating once the
+            // cap is reached, instead of fully inflating a huge payload
+            // and only then noticing the declared-size mismatch below.
+            out = inflateRawSync(raw, { maxOutputLength: MAX_ENTRY_UNCOMPRESSED });
+          } catch (err) {
+            if (err.code === 'ERR_BUFFER_TOO_LARGE') {
+              throw new Error(
+                `Invalid ZIP: ${name} inflates to more than the ${MAX_ENTRY_UNCOMPRESSED}-byte limit (possible decompression bomb).`
+              );
+            }
+            throw err;
+          }
+        } else {
+          throw new Error(`Unsupported compression method ${method} for ${name}.`);
+        }
 
         if (out.length !== uncompressedSize) {
           throw new Error(
             `Invalid ZIP: ${name} inflated to ${out.length} bytes, not the declared ${uncompressedSize} (corrupt or tampered archive).`
           );
         }
-        if (crcExpected !== 0 && crc32(out) !== crcExpected) {
+        // A declared CRC of 0 is a real, valid CRC32 value, not a "skip
+        // this check" sentinel — always verify it.
+        if (crc32(out) !== crcExpected) {
           throw new Error(`Invalid ZIP: CRC mismatch for ${name} (corrupt or tampered archive).`);
         }
         return out;

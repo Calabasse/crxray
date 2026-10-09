@@ -17,9 +17,12 @@ function buildZip(files) {
   for (const [name, content, opts = {}] of files) {
     const nameBuf = Buffer.from(name, 'utf8');
     const isDir = name.endsWith('/');
-    const data = isDir ? Buffer.alloc(0) : deflateRawSync(Buffer.from(content, 'utf8'));
+    const data = isDir ? Buffer.alloc(0) : opts.rawCompressed ?? deflateRawSync(Buffer.from(content, 'utf8'));
     const uncompSize = opts.uncompressedSize ?? (isDir ? 0 : Buffer.byteLength(content, 'utf8'));
-    const crc = opts.crc ?? 0;
+    // Real zip writers always store the entry's real CRC32, so default to
+    // the actual value (like a real file would have) unless a test
+    // deliberately overrides it to simulate corruption/tampering.
+    const crc = opts.crc ?? (isDir || opts.rawCompressed ? 0 : crc32(Buffer.from(content, 'utf8')));
     const method = isDir ? 0 : 8;
 
     const local = Buffer.alloc(30);
@@ -179,12 +182,31 @@ test('rejects an entry whose content does not match its stored CRC32', () => {
   assert.throws(() => entry.data(), /CRC mismatch/);
 });
 
+test('rejects tampered content even when the stored CRC is exactly 0', () => {
+  // A declared CRC of 0 is not a "no CRC" sentinel in the zip format — a
+  // same-length tamper that also zeroes the CRC field must still be caught.
+  const zip = buildZip([['tampered-zero-crc.js', 'hello', { crc: 0 }]]);
+  const [entry] = readZipEntries(zip);
+  assert.throws(() => entry.data(), /CRC mismatch/);
+});
+
 test('accepts an entry whose content matches its stored CRC32', () => {
   const content = 'hello';
   const crc = crc32(Buffer.from(content, 'utf8'));
   const zip = buildZip([['ok.js', content, { crc }]]);
   const [entry] = readZipEntries(zip);
   assert.equal(entry.data().toString(), content);
+});
+
+test('rejects an entry whose real inflated output would exceed the per-entry cap, without fully allocating it first', () => {
+  // Declare a small, in-bounds size (lie) but supply real compressed bytes
+  // that actually inflate to 250MB. This proves the cap is enforced during
+  // inflate (maxOutputLength) rather than only by comparing lengths after
+  // zlib has already allocated the full oversized buffer.
+  const rawCompressed = deflateRawSync(Buffer.alloc(250 * 1024 * 1024, 0));
+  const zip = buildZip([['bomb.bin', 'x', { uncompressedSize: 1000, rawCompressed }]]);
+  const [entry] = readZipEntries(zip);
+  assert.throws(() => entry.data(), /decompression bomb/);
 });
 
 test('blocks a zip-slip entry using an absolute path instead of ../', () => {
