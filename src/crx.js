@@ -99,13 +99,20 @@ export function verifyCrx3Signature(buf, expectedId) {
     const signature = proof[2]?.[0];
     if (!publicKeyDer || !signature) continue;
 
-    const derivedId = bytesToExtensionId(createHash('sha256').update(publicKeyDer).digest().subarray(0, 16));
-    const verifier = createVerify('RSA-SHA256');
-    verifier.update(signedPayload);
-    const sigOk = verifier.verify({ key: publicKeyDer, format: 'der', type: 'spki' }, signature);
+    try {
+      const derivedId = bytesToExtensionId(createHash('sha256').update(publicKeyDer).digest().subarray(0, 16));
+      const verifier = createVerify('RSA-SHA256');
+      verifier.update(signedPayload);
+      const sigOk = verifier.verify({ key: publicKeyDer, format: 'der', type: 'spki' }, signature);
 
-    if (sigOk && derivedId === expectedId) {
-      return { verified: true, extensionId: derivedId, reason: null };
+      if (sigOk && derivedId === expectedId) {
+        return { verified: true, extensionId: derivedId, reason: null };
+      }
+    } catch {
+      // Malformed or unsupported proof (e.g. bad DER) — treat it as a
+      // failed proof and keep checking the rest; real CRX3s often carry
+      // more than one, and one bad entry shouldn't sink a good one.
+      continue;
     }
   }
 

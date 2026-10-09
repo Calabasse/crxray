@@ -80,6 +80,43 @@ test('verifyCrx3Signature rejects a signature that does not match the expected e
   assert.equal(result.verified, false);
 });
 
+test('verifyCrx3Signature skips a malformed proof and still finds a later valid one', () => {
+  // Real CRX3s often carry 2+ sha256_with_rsa proofs. A malformed first
+  // proof (bad DER key) must not crash verification of a good later one.
+  const zip = Buffer.from('fake zip bytes for this test');
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const publicKeyDer = publicKey.export({ type: 'spki', format: 'der' });
+  const idBytes = createHash('sha256').update(publicKeyDer).digest().subarray(0, 16);
+  const signedHeaderData = protoField(1, idBytes);
+
+  const magic = Buffer.from('CRX3 SignedData\0', 'ascii');
+  const sizeField = Buffer.alloc(4);
+  sizeField.writeUInt32LE(signedHeaderData.length, 0);
+  const signer = createSign('RSA-SHA256');
+  signer.update(Buffer.concat([magic, sizeField, signedHeaderData, zip]));
+  const signature = signer.sign(privateKey);
+
+  const goodProof = Buffer.concat([protoField(1, publicKeyDer), protoField(2, signature)]);
+  const badProof = Buffer.concat([protoField(1, Buffer.from('not a valid DER key')), protoField(2, Buffer.alloc(256))]);
+
+  const header = Buffer.concat([
+    protoField(2, badProof), // malformed, comes first
+    protoField(2, goodProof), // valid, comes second
+    protoField(10000, signedHeaderData),
+  ]);
+
+  const prefix = Buffer.alloc(12);
+  prefix.write('Cr24', 0, 'latin1');
+  prefix.writeUInt32LE(3, 4);
+  prefix.writeUInt32LE(header.length, 8);
+  const crx = Buffer.concat([prefix, header, zip]);
+
+  const expectedId = bytesToId(idBytes);
+  const result = verifyCrx3Signature(crx, expectedId);
+  assert.equal(result.verified, true);
+  assert.equal(result.extensionId, expectedId);
+});
+
 test('verifyCrx3Signature reports a non-CRX3 buffer as unverifiable, not a crash', () => {
   const result = verifyCrx3Signature(Buffer.from('not a crx'), 'a'.repeat(32));
   assert.equal(result.verified, false);
