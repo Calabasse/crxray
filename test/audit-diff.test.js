@@ -154,6 +154,23 @@ test('auditExtension does not double-count a bundle superseded by its .unpacked 
   rmSync(dir, { recursive: true });
 });
 
+test('computeRisk does not let repeated hits of one pattern in one file dominate the score', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Chatty Lib', version: '1.0.0', manifest_version: 3, permissions: ['storage'], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, {
+    manifest,
+    files: { 'bg.js': Array.from({ length: 50 }, () => 'eval("x");').join('\n') },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  // 50 raw eval() hits in one file, but risk scoring should treat it as one
+  // distinct (file, pattern) signal, not 50 — low/medium/high, not critical.
+  assert.notEqual(audit.risk.level, 'critical');
+  assert.equal(audit.findings.filter((f) => f.pattern === 'eval()').length, 50); // detail list unchanged
+  rmSync(dir, { recursive: true });
+});
+
 test('collectEndpointsFromContent extracts URLs', () => {
   const eps = collectEndpointsFromContent('fetch("https://api.example.com/v1")');
   assert.deepEqual(eps, ['https://api.example.com/v1']);

@@ -212,11 +212,18 @@ function collectEndpoints(dir) {
 }
 
 function computeRisk(permissions, findings, summary, flags = []) {
+  const distinctHighHits = new Set(
+    findings.filter((f) => f.severity === 'high').map((f) => `${f.file}:${f.pattern}`)
+  ).size;
+  const distinctMediumHits = new Set(
+    findings.filter((f) => f.severity === 'medium').map((f) => `${f.file}:${f.pattern}`)
+  ).size;
+
   let score = 0;
   score += permissions.high.length * 3;
   score += permissions.medium.length * 1;
-  score += findings.filter((f) => f.severity === 'high').length * 2;
-  score += findings.filter((f) => f.severity === 'medium').length;
+  score += distinctHighHits * 2;
+  score += distinctMediumHits;
   score += flags.filter((f) => f.severity === 'high').length * 3;
   score += flags.filter((f) => f.severity === 'medium').length * 1;
 
