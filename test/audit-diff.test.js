@@ -124,3 +124,24 @@ test('diffExtensions detects permission and file changes', () => {
   rmSync(left, { recursive: true });
   rmSync(right, { recursive: true });
 });
+
+test('diffExtensions reports endpoints from added and removed files, not just modified ones', () => {
+  const left = mkdtempSync(path.join(tmpdir(), 'crxray-left-'));
+  const right = mkdtempSync(path.join(tmpdir(), 'crxray-right-'));
+
+  makeExtension(left, {
+    manifest: { name: 'Ext', version: '1.0.0', manifest_version: 3 },
+    files: { 'old.js': 'fetch("https://old-only.example.com")' },
+  });
+  makeExtension(right, {
+    manifest: { name: 'Ext', version: '1.1.0', manifest_version: 3 },
+    files: { 'new.js': 'fetch("https://new-only.example.com")' },
+  });
+
+  const diff = diffExtensions(left, right);
+  assert.deepEqual(diff.endpointChanges.added, ['https://new-only.example.com']);
+  assert.deepEqual(diff.endpointChanges.removed, ['https://old-only.example.com']);
+
+  rmSync(left, { recursive: true });
+  rmSync(right, { recursive: true });
+});
