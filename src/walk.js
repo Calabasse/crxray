@@ -56,3 +56,14 @@ export function isSupersededByUnpack(file) {
   const unpackedDir = path.join(path.dirname(file), `${path.basename(file, '.js')}.unpacked`);
   return isDirectory(unpackedDir);
 }
+
+/**
+ * True when `file` lives inside a `<name>.wakaru/` directory — wakaru's
+ * unpack output for some original file. audit/map treat this output as
+ * read-only reference material and never scan it (unlike webcrack's
+ * `<name>.unpacked/`, whose contents ARE scanned in place of the
+ * superseded original).
+ */
+export function isWakaruOutput(file) {
+  return file.split(path.sep).some((seg) => seg.endsWith('.wakaru'));
+}

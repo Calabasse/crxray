@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { walkFiles, isSupersededByUnpack } from '../src/walk.js';
+import { walkFiles, isSupersededByUnpack, isWakaruOutput } from '../src/walk.js';
 
 test('walkFiles finds files recursively, filtered by extension', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-walk-'));
@@ -53,5 +53,16 @@ test('isSupersededByUnpack is true when a sibling .unpacked directory exists', (
 
   assert.equal(isSupersededByUnpack(path.join(dir, 'bundle.js')), true);
   assert.equal(isSupersededByUnpack(path.join(dir, 'other.js')), false);
+  rmSync(dir, { recursive: true });
+});
+
+test('isWakaruOutput is true for a file inside a <name>.wakaru directory', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-walk-'));
+  writeFileSync(path.join(dir, 'bundle.js'), 'minified');
+  mkdirSync(path.join(dir, 'bundle.wakaru'));
+  writeFileSync(path.join(dir, 'bundle.wakaru', 'module-0.js'), 'readable');
+
+  assert.equal(isWakaruOutput(path.join(dir, 'bundle.wakaru', 'module-0.js')), true);
+  assert.equal(isWakaruOutput(path.join(dir, 'bundle.js')), false);
   rmSync(dir, { recursive: true });
 });
