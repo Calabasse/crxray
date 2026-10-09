@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { crxToZip } from '../src/crx.js';
-import { readZipEntries, extractZip } from '../src/zip.js';
+import { readZipEntries, extractZip, crc32 } from '../src/zip.js';
 
 // --- minimal ZIP builder for fixtures (deflate, no CRC verification) ---
 
@@ -14,17 +14,19 @@ function buildZip(files) {
   const centrals = [];
   let offset = 0;
 
-  for (const [name, content] of files) {
+  for (const [name, content, opts = {}] of files) {
     const nameBuf = Buffer.from(name, 'utf8');
     const isDir = name.endsWith('/');
     const data = isDir ? Buffer.alloc(0) : deflateRawSync(Buffer.from(content, 'utf8'));
-    const uncompSize = isDir ? 0 : Buffer.byteLength(content, 'utf8');
+    const uncompSize = opts.uncompressedSize ?? (isDir ? 0 : Buffer.byteLength(content, 'utf8'));
+    const crc = opts.crc ?? 0;
     const method = isDir ? 0 : 8;
 
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
     local.writeUInt16LE(method, 8);
+    local.writeUInt32LE(crc, 14);
     local.writeUInt32LE(data.length, 18);
     local.writeUInt32LE(uncompSize, 22);
     local.writeUInt16LE(nameBuf.length, 26);
@@ -34,6 +36,7 @@ function buildZip(files) {
     central.writeUInt32LE(0x02014b50, 0);
     central.writeUInt16LE(20, 6);
     central.writeUInt16LE(method, 10);
+    central.writeUInt32LE(crc, 16);
     central.writeUInt32LE(data.length, 20);
     central.writeUInt32LE(uncompSize, 24);
     central.writeUInt16LE(nameBuf.length, 28);
@@ -137,4 +140,55 @@ test('blocks zip-slip path traversal', () => {
 
 test('rejects buffers without an EOCD record', () => {
   assert.throws(() => readZipEntries(Buffer.alloc(100)), /end-of-central-directory/);
+});
+
+// --- resource-exhaustion & integrity guards ---
+
+test('rejects a ZIP claiming more entries than the limit', () => {
+  const zip = buildZip(FIXTURE);
+  const eocdOffset = zip.length - 22;
+  zip.writeUInt16LE(60000, eocdOffset + 10);
+  assert.throws(() => readZipEntries(zip), /entries exceeds/);
+});
+
+test('rejects a single entry declaring an oversized uncompressed size', () => {
+  const zip = buildZip([['big.bin', 'x', { uncompressedSize: 300_000_000 }]]);
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-'));
+  assert.throws(() => extractZip(zip, dir), /byte limit/);
+});
+
+test('rejects entries whose combined declared size exceeds the aggregate cap', () => {
+  const zip = buildZip([
+    ['a.bin', 'x', { uncompressedSize: 180_000_000 }],
+    ['b.bin', 'x', { uncompressedSize: 180_000_000 }],
+    ['c.bin', 'x', { uncompressedSize: 180_000_000 }],
+  ]);
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-'));
+  assert.throws(() => extractZip(zip, dir), /total uncompressed size exceeds/);
+});
+
+test('rejects an entry whose inflated size does not match its declared size', () => {
+  const zip = buildZip([['lie.js', 'hello', { uncompressedSize: 999 }]]);
+  const [entry] = readZipEntries(zip);
+  assert.throws(() => entry.data(), /not the declared 999/);
+});
+
+test('rejects an entry whose content does not match its stored CRC32', () => {
+  const zip = buildZip([['tampered.js', 'hello', { crc: 0xdeadbeef }]]);
+  const [entry] = readZipEntries(zip);
+  assert.throws(() => entry.data(), /CRC mismatch/);
+});
+
+test('accepts an entry whose content matches its stored CRC32', () => {
+  const content = 'hello';
+  const crc = crc32(Buffer.from(content, 'utf8'));
+  const zip = buildZip([['ok.js', content, { crc }]]);
+  const [entry] = readZipEntries(zip);
+  assert.equal(entry.data().toString(), content);
+});
+
+test('blocks a zip-slip entry using an absolute path instead of ../', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-'));
+  const evil = buildZip([['/etc/evil.txt', 'pwned']]);
+  assert.throws(() => extractZip(evil, dir), /zip-slip/);
 });
