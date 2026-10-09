@@ -53,18 +53,14 @@ export async function crxray(input, opts = {}) {
 
   const zip = crxToZip(crx);
 
-  let outDir = opts.out ? path.resolve(opts.out) : null;
-  const extractDir = outDir ?? path.resolve(`.crxray-tmp-${id}`);
+  const extractDir = path.resolve(`.crxray-tmp-${id}`);
   const fileCount = extractZip(zip, extractDir);
 
   const manifest = readManifest(extractDir);
   const summary = summarizeManifest(manifest);
 
-  if (!outDir) {
-    outDir = path.resolve(defaultDirName(manifest, id));
-    if (existsSync(outDir)) rmSync(outDir, { recursive: true });
-    renameSync(extractDir, outDir);
-  }
+  const outDir = opts.out ? path.resolve(opts.out) : path.resolve(defaultDirName(manifest, id));
+  finalizeOutputDir(extractDir, outDir, opts.force);
 
   let crxPath = null;
   if (opts.keepCrx) {
@@ -143,6 +139,20 @@ async function runPostProcess(outDir, manifest, summary, opts) {
   }
 
   return result;
+}
+
+export function finalizeOutputDir(extractDir, outDir, force) {
+  if (existsSync(outDir)) {
+    if (!force) {
+      rmSync(extractDir, { recursive: true });
+      throw new Error(
+        `${path.relative(process.cwd(), outDir) || outDir} already exists. ` +
+          'Pass --out <other-dir> to pick a different location, or --force to overwrite it.'
+      );
+    }
+    rmSync(outDir, { recursive: true });
+  }
+  renameSync(extractDir, outDir);
 }
 
 function defaultDirName(manifest, id) {

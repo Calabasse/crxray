@@ -23,6 +23,7 @@ Download options:
       --store <name>    Store for bare IDs: chrome (default) or edge
       --crx-only        Save the raw .crx file, skip unpacking
       --keep-crx        Keep the .crx alongside the unpacked source
+      --force           Overwrite the output directory if it already exists
       --audit           Security audit + entry-point map (writes .crxray-audit.json)
       --map             Entry-point map and readability stats only
       --deobfuscate     Deobfuscate all JS (webcrack: obfuscator.io, webpack, etc.)
@@ -63,6 +64,7 @@ try {
       out: { type: 'string', short: 'o' },
       'crx-only': { type: 'boolean' },
       'keep-crx': { type: 'boolean' },
+      force: { type: 'boolean' },
       audit: { type: 'boolean' },
       map: { type: 'boolean' },
       deobfuscate: { type: 'boolean' },
@@ -121,6 +123,7 @@ async function runDownload(input, values) {
     store: values.store,
     crxOnly: values['crx-only'],
     keepCrx: values['keep-crx'],
+    force: values.force,
     audit: values.audit,
     map: values.map,
     deobfuscate: values.deobfuscate,
