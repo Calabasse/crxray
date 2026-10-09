@@ -11,7 +11,7 @@ import { beautifyDirectory } from './beautify.js';
 import { deobfuscateDirectory } from './deobfuscate.js';
 import { diffExtensions } from './diff.js';
 import { isDirectory } from './walk.js';
-import { removeSourceMaps } from './sourcemaps.js';
+import { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
 
 export { parseExtensionRef } from './parse.js';
 export { downloadCrx, crxUrl } from './download.js';
@@ -23,7 +23,7 @@ export { buildEntryPointMap } from './map.js';
 export { beautifyDirectory } from './beautify.js';
 export { deobfuscateDirectory } from './deobfuscate.js';
 export { diffExtensions, formatDiffReport } from './diff.js';
-export { removeSourceMaps } from './sourcemaps.js';
+export { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
 
 /**
  * Download and unpack an extension.
@@ -70,7 +70,11 @@ export async function crxray(input, opts = {}) {
 
   const noMaps = opts.noMaps ?? opts.audit;
   let mapsRemoved = [];
-  if (noMaps) mapsRemoved = removeSourceMaps(outDir);
+  let mapsRecovered = { recovered: [], skipped: [] };
+  if (noMaps) {
+    mapsRecovered = recoverFromSourceMaps(outDir);
+    mapsRemoved = removeSourceMaps(outDir);
+  }
 
   const postProcess = await runPostProcess(outDir, manifest, summary, opts);
 
@@ -81,6 +85,7 @@ export async function crxray(input, opts = {}) {
     crxPath,
     fileCount: fileCount - mapsRemoved.length,
     mapsRemoved,
+    mapsRecovered,
     manifest,
     summary,
     ...postProcess,
@@ -97,10 +102,14 @@ export async function processExtension(dir, opts = {}) {
 
   const noMaps = opts.noMaps ?? opts.audit;
   let mapsRemoved = [];
-  if (noMaps) mapsRemoved = removeSourceMaps(outDir);
+  let mapsRecovered = { recovered: [], skipped: [] };
+  if (noMaps) {
+    mapsRecovered = recoverFromSourceMaps(outDir);
+    mapsRemoved = removeSourceMaps(outDir);
+  }
 
   const postProcess = await runPostProcess(outDir, manifest, summary, opts);
-  return { outDir, manifest, summary, mapsRemoved, ...postProcess };
+  return { outDir, manifest, summary, mapsRemoved, mapsRecovered, ...postProcess };
 }
 
 /**

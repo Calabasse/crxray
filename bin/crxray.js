@@ -150,7 +150,12 @@ async function runDownload(input, values) {
 
   printSummary(result);
   if (result.mapsRemoved?.length) {
-    console.log(`Removed ${result.mapsRemoved.length} source map(s) (use --keep-maps to retain)`);
+    const recoveredCount = result.mapsRecovered?.recovered.reduce((sum, r) => sum + r.fileCount, 0) ?? 0;
+    console.log(
+      `Removed ${result.mapsRemoved.length} source map(s)` +
+        (recoveredCount ? `, recovered ${recoveredCount} original source file(s) first` : '') +
+        ' (use --keep-maps to retain)'
+    );
   }
   if (result.audit) {
     console.log('');
