@@ -22,12 +22,21 @@ export function readFields(buf) {
     } else if (wireType === 2) {
       const [len, lenLen] = readVarint(buf, i);
       i += lenLen;
+      if (i + len > buf.length) {
+        throw new Error(`protobuf-lite: length-delimited field ${fieldNumber} extends past end of buffer`);
+      }
       value = buf.subarray(i, i + len);
       i += len;
     } else if (wireType === 1) {
+      if (i + 8 > buf.length) {
+        throw new Error(`protobuf-lite: truncated 64-bit field ${fieldNumber}`);
+      }
       value = buf.subarray(i, i + 8);
       i += 8;
     } else if (wireType === 5) {
+      if (i + 4 > buf.length) {
+        throw new Error(`protobuf-lite: truncated 32-bit field ${fieldNumber}`);
+      }
       value = buf.subarray(i, i + 4);
       i += 4;
     } else {
@@ -45,6 +54,9 @@ function readVarint(buf, offset) {
   let shift = 0n;
   let i = offset;
   for (;;) {
+    if (i >= buf.length) {
+      throw new Error('protobuf-lite: truncated varint (ran past end of buffer)');
+    }
     const byte = buf[i++];
     result |= BigInt(byte & 0x7f) << shift;
     if ((byte & 0x80) === 0) break;

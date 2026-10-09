@@ -51,3 +51,14 @@ test('readFields throws on an unsupported wire type', () => {
   const msg = encodeTag(1, 3); // start-group, deprecated, unsupported
   assert.throws(() => readFields(msg), /unsupported wire type/);
 });
+
+test('readFields throws on a truncated varint instead of silently reading garbage', () => {
+  // Continuation bit set on the final byte, then the buffer just ends.
+  const msg = Buffer.from([0x80]);
+  assert.throws(() => readFields(msg), /truncated/);
+});
+
+test('readFields throws when a length-delimited field claims more bytes than remain', () => {
+  const msg = Buffer.concat([encodeTag(1, 2), encodeVarint(100), Buffer.from('short')]);
+  assert.throws(() => readFields(msg), /past end of buffer/);
+});
