@@ -6,6 +6,7 @@ import path from 'node:path';
 import { auditExtension, collectEndpointsFromContent } from '../src/audit.js';
 import { buildEntryPointMap } from '../src/map.js';
 import { diffExtensions } from '../src/diff.js';
+import { summarizeManifest } from '../src/manifest.js';
 
 function makeExtension(dir, { manifest, files }) {
   writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
@@ -77,6 +78,24 @@ test('auditExtension flags risky permissions and patterns', () => {
   assert.ok(audit.permissions.high.includes('cookies'));
   assert.ok(audit.findings.some((f) => f.pattern === 'eval()'));
   assert.ok(audit.endpoints.includes('https://evil.example.com/track'));
+  rmSync(dir, { recursive: true });
+});
+
+test('auditExtension scores optional_host_permissions and flags a custom update_url', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = {
+    name: 'Sneaky Ext', version: '1.0.0', manifest_version: 3,
+    permissions: ['storage'],
+    optional_host_permissions: ['<all_urls>'],
+    update_url: 'https://not-the-store.example.com/update.xml',
+    background: { service_worker: 'bg.js' },
+  };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, { manifest, files: { 'bg.js': 'console.log("ok");' } });
+
+  const audit = auditExtension(dir, manifest, summary);
+  assert.ok(audit.permissions.high.includes('<all_urls>'));
+  assert.ok(audit.flags.some((f) => f.label.includes('update_url')));
   rmSync(dir, { recursive: true });
 });
 

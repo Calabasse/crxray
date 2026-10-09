@@ -64,13 +64,15 @@ export function auditExtension(dir, manifest, summary) {
   const permissions = classifyPermissions(summary);
   const findings = scanSource(dir);
   const endpoints = collectEndpoints(dir);
-  const risk = computeRisk(permissions, findings, summary);
+  const flags = manifestFlags(summary);
+  const risk = computeRisk(permissions, findings, summary, flags);
 
   return {
     risk,
     permissions,
     findings,
     endpoints,
+    flags,
     entryPoints: map.entryPoints,
     readability: map.readability,
     startHere: map.startHere,
@@ -79,13 +81,44 @@ export function auditExtension(dir, manifest, summary) {
   };
 }
 
+function manifestFlags(summary) {
+  const flags = [];
+  if (!summary) return flags;
+
+  if (summary.updateUrl) {
+    flags.push({
+      severity: 'high',
+      label: 'custom update_url (bypasses store-managed updates)',
+      detail: summary.updateUrl,
+    });
+  }
+  if (summary.contentSecurityPolicy) {
+    const csp = JSON.stringify(summary.contentSecurityPolicy);
+    if (/unsafe-eval|wasm-unsafe-eval/.test(csp)) {
+      flags.push({ severity: 'high', label: 'CSP allows unsafe-eval', detail: csp });
+    }
+  }
+  if (summary.externallyConnectable) {
+    flags.push({
+      severity: 'medium',
+      label: 'externally_connectable: other extensions/sites can message this one',
+      detail: JSON.stringify(summary.externallyConnectable),
+    });
+  }
+  if (summary.oauth2) {
+    flags.push({ severity: 'low', label: 'requests OAuth2 scopes', detail: (summary.oauth2.scopes ?? []).join(', ') });
+  }
+  return flags;
+}
+
 function classifyPermissions(summary) {
   if (!summary) return { high: [], medium: [], low: [], hostAccess: [] };
 
   const all = [
-    ...summary.permissions,
-    ...summary.optionalPermissions,
-    ...summary.hostPermissions,
+    ...(summary.permissions ?? []),
+    ...(summary.optionalPermissions ?? []),
+    ...(summary.hostPermissions ?? []),
+    ...(summary.optionalHostPermissions ?? []),
   ];
 
   const high = [];
@@ -149,12 +182,14 @@ function collectEndpoints(dir) {
   return [...endpoints].sort().slice(0, 100);
 }
 
-function computeRisk(permissions, findings, summary) {
+function computeRisk(permissions, findings, summary, flags = []) {
   let score = 0;
   score += permissions.high.length * 3;
   score += permissions.medium.length * 1;
   score += findings.filter((f) => f.severity === 'high').length * 2;
   score += findings.filter((f) => f.severity === 'medium').length;
+  score += flags.filter((f) => f.severity === 'high').length * 3;
+  score += flags.filter((f) => f.severity === 'medium').length * 1;
 
   const hasBroadHost =
     permissions.hostAccess.includes('<all_urls>') ||
@@ -184,6 +219,12 @@ export function formatAuditReport(audit) {
 
   if (audit.name) {
     lines.push(`  ${audit.name}${audit.version ? ` v${audit.version}` : ''}`);
+    lines.push('');
+  }
+
+  if (audit.flags?.length) {
+    lines.push('Manifest flags');
+    for (const f of audit.flags) lines.push(`  [${f.severity}] ${f.label}${f.detail ? ` — ${f.detail}` : ''}`);
     lines.push('');
   }
 
