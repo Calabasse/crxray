@@ -137,18 +137,22 @@ const SUSPICIOUS_PATTERNS = [
 const ENTROPY_MIN_FILE_SIZE = 500;
 const ENTROPY_THRESHOLD = 6.0;
 
-// A whole file that's nothing but `module.exports = "data:...;base64,...";`
-// (or the ESM equivalent) is a bundler-wrapped binary asset -- a font, an
-// image -- not obfuscated code. Base64-encoded binary data is inherently
-// high-entropy no matter what it encodes, so without this exclusion every
-// such asset reads as "possible obfuscation". Found on real code: 45/45 of
-// the entropy hits on a real extension (Scrnli) were exactly this shape.
-const DATA_URI_ASSET_RE =
-  /^(?:module\.exports\s*=|export\s+default)\s*["'`]data:[\w.+-]+\/[\w.+-]+;base64,[A-Za-z0-9+/=]+["'`]\s*;?\s*$/;
-
-function isEmbeddedDataUriAsset(content) {
-  return DATA_URI_ASSET_RE.test(content.trim());
-}
+// A high-entropy file only gets reported when the SAME file also contains a
+// decode/execute call -- eval, new Function, atob, a dynamically-created
+// <script> tag. A bare embedded blob with no decode step next to it is
+// almost always a legitimate asset (a font, an image, a protobuf schema):
+// base64-encoded binary data is inherently high-entropy no matter what it
+// encodes, and real obfuscated payloads pair the blob with exactly this
+// kind of decode-and-run step in the same file -- that pairing is the
+// actual signal, not entropy alone. Confirmed against three real false
+// positives this session, none of which had a decode call anywhere nearby:
+// a Bitwarden-adjacent wasm hex blob, 45 embedded fonts in Scrnli
+// (`module.exports = "data:font/woff2;base64,...";`), and 8 embedded
+// protobuf schemas in Grammarly passed as plain function-call arguments --
+// a different enough shape from the font case that chasing the syntax
+// pattern-by-pattern would never fully close; requiring the companion
+// decode signal does, in one general mechanism.
+const ENTROPY_COMPANION_PATTERN_IDS = new Set(['eval', 'function-constructor', 'atob', 'external-script-tag']);
 
 function shannonEntropy(str) {
   const freq = new Map();
@@ -306,23 +310,18 @@ function scanSource(dir) {
     const content = readFileSync(file, 'utf8');
     const lines = content.split('\n');
 
-    if (content.length >= ENTROPY_MIN_FILE_SIZE && !isEmbeddedDataUriAsset(content)) {
+    let entropyValue = null;
+    if (content.length >= ENTROPY_MIN_FILE_SIZE) {
       const entropy = shannonEntropy(content);
-      if (entropy >= ENTROPY_THRESHOLD) {
-        findings.push({
-          severity: 'medium',
-          pattern: 'High entropy (possible obfuscation)',
-          file: rel,
-          line: 1,
-          snippet: `entropy=${entropy.toFixed(2)}`,
-        });
-      }
+      if (entropy >= ENTROPY_THRESHOLD) entropyValue = entropy;
     }
+    let hasDecodeSignal = false;
 
     for (const pattern of SUSPICIOUS_PATTERNS) {
       pattern.re.lastIndex = 0;
       let match;
       while ((match = pattern.re.exec(content)) !== null) {
+        if (ENTROPY_COMPANION_PATTERN_IDS.has(pattern.id)) hasDecodeSignal = true;
         const lineStart = content.lastIndexOf('\n', match.index - 1) + 1;
         const line = content.slice(0, match.index).split('\n').length;
         const lineText = lines[line - 1] ?? '';
@@ -343,6 +342,16 @@ function scanSource(dir) {
         });
         if (findings.length >= 200) return findings;
       }
+    }
+
+    if (entropyValue !== null && hasDecodeSignal) {
+      findings.push({
+        severity: 'medium',
+        pattern: 'High entropy (possible obfuscation)',
+        file: rel,
+        line: 1,
+        snippet: `entropy=${entropyValue.toFixed(2)}`,
+      });
     }
   }
 

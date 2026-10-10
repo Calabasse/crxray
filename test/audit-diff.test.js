@@ -292,7 +292,11 @@ test('secret patterns do not flag ordinary password/apiKey identifiers with no r
   rmSync(dir, { recursive: true });
 });
 
-test('scanSource flags a high-entropy file as possible obfuscation, and leaves readable code alone', () => {
+test('scanSource flags a high-entropy blob paired with a decode call, and leaves readable code alone', () => {
+  // Entropy alone is never enough -- see the companion tests below for why.
+  // The signal is a high-entropy blob PAIRED with a decode/execute call
+  // (eval, new Function, atob, a dynamic <script> tag) in the same file,
+  // which is the actual shape of real obfuscated-and-run code.
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
   const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
   const summary = summarizeManifest(manifest);
@@ -304,7 +308,7 @@ test('scanSource flags a high-entropy file as possible obfuscation, and leaves r
   makeExtension(dir, {
     manifest,
     files: {
-      'blob.js': `const payload = "${highEntropy}";`,
+      'blob.js': `const payload = "${highEntropy}"; eval(payload);`,
       'normal.js': readable,
     },
   });
@@ -316,17 +320,22 @@ test('scanSource flags a high-entropy file as possible obfuscation, and leaves r
   rmSync(dir, { recursive: true });
 });
 
-test('entropy check does not flag an embedded base64 data: URI asset (font/image) wrapped as a module', () => {
-  // Found on real code: Scrnli's wakaru-unpacked bundle contains 45 modules
-  // of the exact shape `module.exports = "data:font/woff2;base64,...";` --
-  // a legitimately embedded web font, not obfuscated code. Base64-encoded
-  // binary data is inherently high-entropy regardless of what it encodes.
+test('entropy check does not flag a bare high-entropy blob with no decode call anywhere in the file', () => {
+  // Found on real code, twice, in two different shapes: Scrnli's
+  // wakaru-unpacked bundle had 45 modules of the exact shape
+  // `module.exports = "data:font/woff2;base64,...";` (a legitimately
+  // embedded web font), and Grammarly had 8 modules passing a base64
+  // protobuf schema as a plain function-call argument -- different enough
+  // syntax that a shape-specific exclusion for one would have missed the
+  // other. Neither had a decode/execute call anywhere nearby, which is
+  // exactly why entropy alone over-fires on both: base64-encoded binary
+  // data is inherently high-entropy regardless of what it encodes.
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
   const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
   const summary = summarizeManifest(manifest);
   // Real base64 alphabet only (A-Za-z0-9+/), evenly cycled -- entropy
   // approaches its true ceiling of exactly log2(64) = 6.0 at this length,
-  // same as the real font data that motivated this test (confirmed empty
+  // same as the real font/schema data that motivated this test (confirmed
   // empirically, not just asserted).
   const base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   const base64Payload = Array.from({ length: 1280 }, (_, i) => base64Alphabet[(i * 17) % base64Alphabet.length]).join('');
@@ -334,6 +343,7 @@ test('entropy check does not flag an embedded base64 data: URI asset (font/image
     manifest,
     files: {
       'font-asset.js': `module.exports = "data:font/woff2;base64,${base64Payload}";`,
+      'schema-asset.js': `export const schema = decodeProtobufSchema("${base64Payload}");`,
     },
   });
 
