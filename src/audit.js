@@ -137,6 +137,19 @@ const SUSPICIOUS_PATTERNS = [
 const ENTROPY_MIN_FILE_SIZE = 500;
 const ENTROPY_THRESHOLD = 6.0;
 
+// A whole file that's nothing but `module.exports = "data:...;base64,...";`
+// (or the ESM equivalent) is a bundler-wrapped binary asset -- a font, an
+// image -- not obfuscated code. Base64-encoded binary data is inherently
+// high-entropy no matter what it encodes, so without this exclusion every
+// such asset reads as "possible obfuscation". Found on real code: 45/45 of
+// the entropy hits on a real extension (Scrnli) were exactly this shape.
+const DATA_URI_ASSET_RE =
+  /^(?:module\.exports\s*=|export\s+default)\s*["'`]data:[\w.+-]+\/[\w.+-]+;base64,[A-Za-z0-9+/=]+["'`]\s*;?\s*$/;
+
+function isEmbeddedDataUriAsset(content) {
+  return DATA_URI_ASSET_RE.test(content.trim());
+}
+
 function shannonEntropy(str) {
   const freq = new Map();
   for (const ch of str) freq.set(ch, (freq.get(ch) ?? 0) + 1);
@@ -293,7 +306,7 @@ function scanSource(dir) {
     const content = readFileSync(file, 'utf8');
     const lines = content.split('\n');
 
-    if (content.length >= ENTROPY_MIN_FILE_SIZE) {
+    if (content.length >= ENTROPY_MIN_FILE_SIZE && !isEmbeddedDataUriAsset(content)) {
       const entropy = shannonEntropy(content);
       if (entropy >= ENTROPY_THRESHOLD) {
         findings.push({

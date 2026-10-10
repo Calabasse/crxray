@@ -316,6 +316,33 @@ test('scanSource flags a high-entropy file as possible obfuscation, and leaves r
   rmSync(dir, { recursive: true });
 });
 
+test('entropy check does not flag an embedded base64 data: URI asset (font/image) wrapped as a module', () => {
+  // Found on real code: Scrnli's wakaru-unpacked bundle contains 45 modules
+  // of the exact shape `module.exports = "data:font/woff2;base64,...";` --
+  // a legitimately embedded web font, not obfuscated code. Base64-encoded
+  // binary data is inherently high-entropy regardless of what it encodes.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  // Real base64 alphabet only (A-Za-z0-9+/), evenly cycled -- entropy
+  // approaches its true ceiling of exactly log2(64) = 6.0 at this length,
+  // same as the real font data that motivated this test (confirmed empty
+  // empirically, not just asserted).
+  const base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const base64Payload = Array.from({ length: 1280 }, (_, i) => base64Alphabet[(i * 17) % base64Alphabet.length]).join('');
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'font-asset.js': `module.exports = "data:font/woff2;base64,${base64Payload}";`,
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const entropyHits = audit.findings.filter((f) => f.pattern === 'High entropy (possible obfuscation)');
+  assert.deepEqual(entropyHits, []);
+  rmSync(dir, { recursive: true });
+});
+
 test('scanSource flags affiliate link injection and review-nagging URLs', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
   const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
