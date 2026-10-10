@@ -34,6 +34,7 @@ export { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
  * @param {object} [opts]
  * @param {string} [opts.out] - output directory (default: ./<name>-<version> or ./<id>)
  * @param {string} [opts.store] - store for bare IDs ('chrome' | 'edge')
+ * @param {string} [opts.chromeVersion] - override the prodversion sent to the store's update endpoint (default goes stale as Chrome ships new versions; see src/download.js)
  * @param {boolean} [opts.crxOnly] - save the .crx and skip unpacking
  * @param {boolean} [opts.keepCrx] - also save the .crx next to the unpacked dir
  * @param {boolean} [opts.audit] - run security audit after unpack
@@ -46,7 +47,7 @@ export { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
  */
 export async function crxray(input, opts = {}) {
   const { id, store } = parseExtensionRef(input, opts.store ?? 'chrome');
-  const crx = await downloadCrx(id, store);
+  const crx = await downloadCrx(id, store, opts.chromeVersion);
 
   if (opts.crxOnly) {
     const crxPath = path.resolve(opts.out ?? `${id}.crx`);
@@ -126,7 +127,7 @@ export async function crxrayDiff(left, right, opts = {}) {
 
 async function resolveDiffTarget(input, opts) {
   if (isDirectory(input)) return path.resolve(input);
-  const result = await crxray(input, { store: opts.store, quiet: true });
+  const result = await crxray(input, { store: opts.store, chromeVersion: opts.chromeVersion, quiet: true });
   return result.outDir;
 }
 

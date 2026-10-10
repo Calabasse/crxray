@@ -1,6 +1,13 @@
 // These are the same update endpoints the browsers themselves poll for
 // extension installs/updates, so they serve the canonical CRX for an ID.
-const CHROME_VERSION = '131.0.6778.86';
+// Google's endpoint returns 204 (treated as "not found" below) for any
+// extension whose manifest requires a newer Chrome than the prodversion
+// this declares, so this value WILL go stale as Chrome keeps shipping --
+// confirmed live on 2026-10-10 against Bitwarden, a then-current, 8M-user
+// extension that a since-updated version of this constant failed against.
+// Pass chromeVersion to crxUrl/downloadCrx (or --chrome-version on the CLI)
+// to work around it without waiting for this default to be bumped again.
+const CHROME_VERSION = '142.0.7444.0';
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 const MAX_CRX_SIZE = 200 * 1024 * 1024; // 200MB
 
@@ -16,13 +23,13 @@ const ALLOWED_HOSTS = {
   edge: (host) => host === 'edge.microsoft.com' || host.endsWith('.delivery.mp.microsoft.com'),
 };
 
-export function crxUrl(id, store = 'chrome') {
+export function crxUrl(id, store = 'chrome', chromeVersion = CHROME_VERSION) {
   if (store === 'edge') {
     const x = encodeURIComponent(`id=${id}&installsource=ondemand&uc`);
-    return `https://edge.microsoft.com/extensionwebstorebase/v1/crx?response=redirect&prodversion=${CHROME_VERSION}&acceptformat=crx3&x=${x}`;
+    return `https://edge.microsoft.com/extensionwebstorebase/v1/crx?response=redirect&prodversion=${chromeVersion}&acceptformat=crx3&x=${x}`;
   }
   const x = encodeURIComponent(`id=${id}&uc`);
-  return `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=${CHROME_VERSION}&acceptformat=crx2,crx3&x=${x}`;
+  return `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=${chromeVersion}&acceptformat=crx2,crx3&x=${x}`;
 }
 
 /**
@@ -96,7 +103,7 @@ async function readWithLimit(res, maxBytes, id) {
 /**
  * Download the CRX for an extension ID. Returns a Buffer.
  */
-export async function downloadCrx(id, store = 'chrome') {
-  const url = crxUrl(id, store);
+export async function downloadCrx(id, store = 'chrome', chromeVersion = CHROME_VERSION) {
+  const url = crxUrl(id, store, chromeVersion);
   return downloadFromUrl(url, { id, isAllowedHost: ALLOWED_HOSTS[store] ?? (() => false) });
 }

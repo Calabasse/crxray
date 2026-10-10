@@ -13,6 +13,20 @@ test('crxUrl builds the edge update endpoint', () => {
   assert.match(url, /^https:\/\/edge\.microsoft\.com\/extensionwebstorebase\/v1\/crx\?/);
 });
 
+test('crxUrl accepts a chromeVersion override, for when the built-in default goes stale', () => {
+  // Google's update endpoint returns 204 (treated as "not found" by
+  // downloadFromUrl) for any extension whose manifest requires a newer
+  // Chrome than the prodversion a request declares -- confirmed live against
+  // Bitwarden on 2026-10-10, which requires newer than the then-current
+  // built-in default. The override is the escape hatch for whenever the
+  // built-in default next falls behind.
+  const chromeUrl = crxUrl('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'chrome', '142.0.7444.0');
+  assert.match(chromeUrl, /prodversion=142\.0\.7444\.0/);
+
+  const edgeUrl = crxUrl('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'edge', '142.0.7444.0');
+  assert.match(edgeUrl, /prodversion=142\.0\.7444\.0/);
+});
+
 async function withServer(handler, fn) {
   const server = createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

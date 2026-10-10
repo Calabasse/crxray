@@ -21,6 +21,10 @@ Usage:
 Download options:
   -o, --out <dir>       Output directory (default: ./<name>-<version>)
       --store <name>    Store for bare IDs: chrome (default) or edge
+      --chrome-version <ver>  Override the prodversion sent to the store's
+                        update endpoint (default goes stale as Chrome ships
+                        new versions, which can make current extensions that
+                        require a newer Chrome report as "not found")
       --crx-only        Save the raw .crx file, skip unpacking
       --keep-crx        Keep the .crx alongside the unpacked source
       --force           Overwrite the output directory if it already exists
@@ -50,6 +54,7 @@ function fail(msg) {
 
 const sharedOptions = {
   store: { type: 'string' },
+  'chrome-version': { type: 'string' },
   json: { type: 'boolean' },
   quiet: { type: 'boolean', short: 'q' },
   help: { type: 'boolean', short: 'h' },
@@ -123,6 +128,7 @@ async function runDownload(input, values) {
   const result = await crxray(input, {
     out: values.out,
     store: values.store,
+    chromeVersion: values['chrome-version'],
     crxOnly: values['crx-only'],
     keepCrx: values['keep-crx'],
     force: values.force,
@@ -213,7 +219,7 @@ async function runDiff(args, values) {
   const [left, right] = args;
   if (!left || !right) fail('diff requires two targets: crxray diff <left> <right>');
 
-  const diff = await crxrayDiff(left, right, { store: values.store });
+  const diff = await crxrayDiff(left, right, { store: values.store, chromeVersion: values['chrome-version'] });
 
   if (values.json) {
     console.log(JSON.stringify(diff, null, 2));
