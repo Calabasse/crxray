@@ -292,6 +292,54 @@ test('secret patterns do not flag ordinary password/apiKey identifiers with no r
   rmSync(dir, { recursive: true });
 });
 
+test('scanSource flags a high-entropy file as possible obfuscation, and leaves readable code alone', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  // Deterministic high-entropy filler: 94 distinct printable-ASCII symbols,
+  // evenly spread, well past the 6.0 bits/char threshold -- no real
+  // randomness needed for a reproducible test.
+  const highEntropy = Array.from({ length: 600 }, (_, i) => String.fromCharCode(33 + ((i * 37) % 94))).join('');
+  const readable = 'function greet(name) {\n  return "Hello, " + name + "!";\n}\n'.repeat(20);
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'blob.js': `const payload = "${highEntropy}";`,
+      'normal.js': readable,
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const entropyHits = audit.findings.filter((f) => f.pattern === 'High entropy (possible obfuscation)');
+  assert.ok(entropyHits.some((f) => f.file === 'blob.js'));
+  assert.ok(!entropyHits.some((f) => f.file === 'normal.js'));
+  rmSync(dir, { recursive: true });
+});
+
+test('scanSource flags affiliate link injection and review-nagging URLs', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'bg.js': [
+        'link.href = baseUrl + "?ref=myaffid123";',
+        'const plainLink = "https://example.com/page"; el.href = plainLink;',
+        'window.open("https://chromewebstore.google.com/detail/myext/abc123/reviews");',
+      ].join('\n'),
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const patterns = audit.findings.map((f) => f.pattern);
+  assert.ok(patterns.includes('Affiliate link injection'));
+  assert.ok(patterns.includes('Review-nagging store URL'));
+  // the plain, non-affiliate href must not itself trip the affiliate check
+  assert.equal(patterns.filter((p) => p === 'Affiliate link injection').length, 1);
+  rmSync(dir, { recursive: true });
+});
+
 test('auditExtension does not double-count a bundle superseded by its .unpacked copy', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
   const manifest = {

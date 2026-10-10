@@ -114,7 +114,39 @@ const SUSPICIOUS_PATTERNS = [
     re: /-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----/g,
     severity: 'high',
   },
+  // Dark patterns: user-hostile, not necessarily malicious. Kept to two
+  // well-defined, low-noise checks -- notification-spam and fingerprinting
+  // both need multi-signal/control-flow analysis to avoid flooding on
+  // ordinary, benign single API calls (e.g. canvas.toDataURL() alone is a
+  // completely normal screenshot feature), so they're left for later rather
+  // than shipped as a noisy single-call regex.
+  {
+    id: 'affiliate-link-injection',
+    label: 'Affiliate link injection',
+    re: /href\s*[+=][^;]{0,80}?[?&](?:ref|aff|affiliate|utm_source)=/gi,
+    severity: 'medium',
+  },
+  {
+    id: 'review-nagging-url',
+    label: 'Review-nagging store URL',
+    re: /(?:chromewebstore\.google\.com\/detail|chrome\.google\.com\/webstore\/detail|addons\.mozilla\.org\/[a-z-]+\/addon)\/[^"'\s]*review/gi,
+    severity: 'low',
+  },
 ];
+
+const ENTROPY_MIN_FILE_SIZE = 500;
+const ENTROPY_THRESHOLD = 6.0;
+
+function shannonEntropy(str) {
+  const freq = new Map();
+  for (const ch of str) freq.set(ch, (freq.get(ch) ?? 0) + 1);
+  let entropy = 0;
+  for (const count of freq.values()) {
+    const p = count / str.length;
+    entropy -= p * Math.log2(p);
+  }
+  return entropy;
+}
 
 // Permission <-> API-call pairs worth correlating: a permission *declared*
 // in the manifest AND a matching call actually found in the source is a
@@ -260,6 +292,19 @@ function scanSource(dir) {
     const rel = relPath(dir, file);
     const content = readFileSync(file, 'utf8');
     const lines = content.split('\n');
+
+    if (content.length >= ENTROPY_MIN_FILE_SIZE) {
+      const entropy = shannonEntropy(content);
+      if (entropy >= ENTROPY_THRESHOLD) {
+        findings.push({
+          severity: 'medium',
+          pattern: 'High entropy (possible obfuscation)',
+          file: rel,
+          line: 1,
+          snippet: `entropy=${entropy.toFixed(2)}`,
+        });
+      }
+    }
 
     for (const pattern of SUSPICIOUS_PATTERNS) {
       pattern.re.lastIndex = 0;
