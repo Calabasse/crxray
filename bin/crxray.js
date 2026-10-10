@@ -27,6 +27,7 @@ Download options:
       --audit           Security audit + entry-point map (writes .crxray-audit.json)
       --map             Entry-point map and readability stats only
       --deobfuscate     Deobfuscate all JS (webcrack: obfuscator.io, webpack, etc.)
+      --unpack-with-wakaru  Structurally unpack bundles with wakaru (npx), independent of --deobfuscate
       --beautify        Beautify all JS files
       --no-maps         Delete .map source maps (on by default with --audit)
       --keep-maps       Keep source maps even when using --audit
@@ -68,6 +69,7 @@ try {
       audit: { type: 'boolean' },
       map: { type: 'boolean' },
       deobfuscate: { type: 'boolean' },
+      'unpack-with-wakaru': { type: 'boolean' },
       beautify: { type: 'boolean' },
       'no-maps': { type: 'boolean' },
       'keep-maps': { type: 'boolean' },
@@ -127,6 +129,7 @@ async function runDownload(input, values) {
     audit: values.audit,
     map: values.map,
     deobfuscate: values.deobfuscate,
+    unpackWithWakaru: values['unpack-with-wakaru'],
     beautify: values.beautify,
     quiet: values.quiet,
     ...mapOpts(values),
@@ -172,6 +175,12 @@ async function runDownload(input, values) {
       `Deobfuscated ${result.deobfuscate.changed} files (${result.deobfuscate.unpacked} bundles unpacked)`
     );
   }
+  if (result.wakaru && !values.quiet) {
+    console.log('');
+    console.log(
+      `Unpacked ${result.wakaru.unpacked} bundle(s) with wakaru (${result.wakaru.errors.length} failed)`
+    );
+  }
   if (result.beautify && !values.quiet) {
     console.log(`Beautified ${result.beautify.changed} files`);
   }
@@ -185,6 +194,7 @@ async function runAudit(args, values) {
     audit: true,
     map: true,
     deobfuscate: values.deobfuscate,
+    unpackWithWakaru: values['unpack-with-wakaru'],
     beautify: values.beautify,
     quiet: values.quiet,
     ...mapOpts({ ...values, audit: true }),
