@@ -145,6 +145,53 @@ test('scanSource flags fetch, WebSocket, sendMessage, and executeScript', () => 
   rmSync(dir, { recursive: true });
 });
 
+test('scanSource flags the browser.* namespace the same as chrome.* (real extensions use both)', () => {
+  // Found via a real-world checkpoint: uBlock Origin Lite calls
+  // browser.scripting.executeScript(), not chrome.scripting.executeScript(),
+  // and the chrome.-only regexes missed it entirely.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'bg.js': [
+        'browser.cookies.getAll({}, () => {});',
+        'browser.webRequest.onBeforeRequest.addListener(() => {});',
+        'browser.runtime.sendMessage({ type: "ping" });',
+        'browser.scripting.executeScript({ target: { tabId: 1 }, func: () => {} });',
+        'browser.tabs.executeScript(1, { code: "1" });',
+      ].join('\n'),
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const patterns = audit.findings.map((f) => f.pattern);
+  assert.ok(patterns.includes('chrome.cookies access'));
+  assert.ok(patterns.includes('chrome.webRequest access'));
+  assert.ok(patterns.includes('chrome.runtime.sendMessage/connect'));
+  assert.ok(patterns.includes('chrome.scripting.executeScript'));
+  assert.ok(patterns.includes('chrome.tabs.executeScript'));
+  rmSync(dir, { recursive: true });
+});
+
+test('auditExtension correlates a declared permission with a browser.* API call too', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = {
+    name: 'Cross-Browser Ext', version: '1.0.0', manifest_version: 3,
+    permissions: ['scripting'],
+    background: { service_worker: 'bg.js' },
+  };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, { manifest, files: { 'bg.js': 'browser.scripting.executeScript({ target: { tabId: 1 }, func: () => {} });' } });
+
+  const audit = auditExtension(dir, manifest, summary);
+  assert.equal(audit.correlations.length, 1);
+  assert.equal(audit.correlations[0].permission, 'scripting');
+  assert.equal(audit.correlations[0].pattern, 'chrome.scripting.executeScript');
+  rmSync(dir, { recursive: true });
+});
+
 test('auditExtension does not double-count a bundle superseded by its .unpacked copy', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
   const manifest = {

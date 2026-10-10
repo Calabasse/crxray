@@ -36,8 +36,8 @@ const SUSPICIOUS_PATTERNS = [
   { id: 'function-constructor', label: 'new Function()', re: /\bnew\s+Function\s*\(/g, severity: 'high' },
   { id: 'atob', label: 'atob() decoding', re: /\batob\s*\(/g, severity: 'medium' },
   { id: 'document-write', label: 'document.write()', re: /\bdocument\.write\s*\(/g, severity: 'medium' },
-  { id: 'chrome-cookies', label: 'chrome.cookies access', re: /\bchrome\.cookies\b/g, severity: 'high' },
-  { id: 'chrome-webRequest', label: 'chrome.webRequest access', re: /\bchrome\.webRequest\b/g, severity: 'high' },
+  { id: 'chrome-cookies', label: 'chrome.cookies access', re: /\b(?:chrome|browser)\.cookies\b/g, severity: 'high' },
+  { id: 'chrome-webRequest', label: 'chrome.webRequest access', re: /\b(?:chrome|browser)\.webRequest\b/g, severity: 'high' },
   { id: 'send-beacon', label: 'navigator.sendBeacon()', re: /\bnavigator\.sendBeacon\s*\(/g, severity: 'medium' },
   { id: 'xhr', label: 'XMLHttpRequest', re: /\bnew\s+XMLHttpRequest\s*\(/g, severity: 'low' },
   { id: 'dynamic-import', label: 'dynamic import()', re: /\bimport\s*\(/g, severity: 'low' },
@@ -46,19 +46,19 @@ const SUSPICIOUS_PATTERNS = [
   {
     id: 'runtime-send-message',
     label: 'chrome.runtime.sendMessage/connect',
-    re: /\bchrome\.runtime\.(sendMessage|connect)\s*\(/g,
+    re: /\b(?:chrome|browser)\.runtime\.(sendMessage|connect)\s*\(/g,
     severity: 'low',
   },
   {
     id: 'scripting-execute-script',
     label: 'chrome.scripting.executeScript',
-    re: /\bchrome\.scripting\.executeScript\s*\(/g,
+    re: /\b(?:chrome|browser)\.scripting\.executeScript\s*\(/g,
     severity: 'high',
   },
   {
     id: 'tabs-execute-script',
     label: 'chrome.tabs.executeScript',
-    re: /\bchrome\.tabs\.executeScript\s*\(/g,
+    re: /\b(?:chrome|browser)\.tabs\.executeScript\s*\(/g,
     severity: 'high',
   },
   {
