@@ -260,3 +260,16 @@ test('auditExtension never scans files inside a <name>.wakaru directory', () => 
   assert.equal(audit.endpoints.length, 0);
   rmSync(dir, { recursive: true });
 });
+
+test('buildEntryPointMap readability stats ignore files inside a <name>.wakaru directory', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-map-'));
+  mkdirSync(path.join(dir, 'bundle.wakaru'));
+  writeFileSync(path.join(dir, 'bundle.wakaru', 'module-0.js'), 'x'.repeat(2000));
+  writeFileSync(path.join(dir, 'clean.js'), 'console.log("fine");\n');
+
+  const map = buildEntryPointMap(dir, null);
+  assert.equal(map.readability.total, 1);
+  assert.equal(map.readability.files.length, 1);
+  assert.equal(map.readability.files[0].file, 'clean.js');
+  rmSync(dir, { recursive: true });
+});
