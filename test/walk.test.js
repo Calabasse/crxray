@@ -56,7 +56,7 @@ test('isSupersededByUnpack is true when a sibling .unpacked directory exists', (
   rmSync(dir, { recursive: true });
 });
 
-test('isWakaruOutput is true for a file inside a <name>.wakaru directory', () => {
+test('isWakaruOutput is true for a file inside a <name>.wakaru directory with a sibling <name>.js', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-walk-'));
   writeFileSync(path.join(dir, 'bundle.js'), 'minified');
   mkdirSync(path.join(dir, 'bundle.wakaru'));
@@ -65,4 +65,29 @@ test('isWakaruOutput is true for a file inside a <name>.wakaru directory', () =>
   assert.equal(isWakaruOutput(path.join(dir, 'bundle.wakaru', 'module-0.js')), true);
   assert.equal(isWakaruOutput(path.join(dir, 'bundle.js')), false);
   rmSync(dir, { recursive: true });
+});
+
+test('isWakaruOutput is false for a .wakaru-named directory with no sibling .js (not provably our output)', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-walk-'));
+  mkdirSync(path.join(dir, 'evil.wakaru'));
+  writeFileSync(path.join(dir, 'evil.wakaru', 'payload.js'), 'eval("danger")');
+
+  assert.equal(isWakaruOutput(path.join(dir, 'evil.wakaru', 'payload.js')), false);
+  rmSync(dir, { recursive: true });
+});
+
+test('isWakaruOutput only checks the immediate parent directory, not every ancestor', () => {
+  // A file whose immediate parent is NOT a .wakaru dir must not match just
+  // because some ancestor further up the path happens to be named that way
+  // (e.g. the extraction root itself sitting under a host path like
+  // /tmp/cases.wakaru/...). Matching any ancestor previously zeroed out an
+  // entire audit by accident.
+  const root = mkdtempSync(path.join(tmpdir(), 'crxray-walk-'));
+  const ancestor = path.join(root, 'cases.wakaru');
+  const extracted = path.join(ancestor, 'extracted');
+  mkdirSync(extracted, { recursive: true });
+  writeFileSync(path.join(extracted, 'clean.js'), 'console.log("fine");');
+
+  assert.equal(isWakaruOutput(path.join(extracted, 'clean.js')), false);
+  rmSync(root, { recursive: true });
 });

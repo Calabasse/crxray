@@ -101,6 +101,7 @@ test('unpackWithWakaru does not re-process its own or webcrack output', async ()
   writeFileSync(path.join(dir, 'bundle.js'), bigEnough('(function(){})();'));
   mkdirSync(path.join(dir, 'bundle.unpacked'));
   writeFileSync(path.join(dir, 'bundle.unpacked', 'module-0.js'), bigEnough('export const a = 1;'));
+  writeFileSync(path.join(dir, 'other.js'), bigEnough('(function(){})();'));
   mkdirSync(path.join(dir, 'other.wakaru'));
   writeFileSync(path.join(dir, 'other.wakaru', 'module-0.js'), bigEnough('export const b = 2;'));
 
@@ -111,7 +112,7 @@ test('unpackWithWakaru does not re-process its own or webcrack output', async ()
   };
 
   await unpackWithWakaru(dir, { quiet: true, exec });
-  assert.equal(callCount, 1); // only bundle.js — not the .unpacked or .wakaru contents
+  assert.equal(callCount, 2); // bundle.js and other.js — not the .unpacked or .wakaru contents
   rmSync(dir, { recursive: true });
 });
 

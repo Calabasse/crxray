@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
 // Chrome/Edge extensions are shallow, small trees. These caps catch a
@@ -58,12 +58,26 @@ export function isSupersededByUnpack(file) {
 }
 
 /**
- * True when `file` lives inside a `<name>.wakaru/` directory — wakaru's
- * unpack output for some original file. audit/map treat this output as
- * read-only reference material and never scan it (unlike webcrack's
+ * True when `file` lives directly inside a `<name>.wakaru/` directory AND
+ * a sibling `<name>.js` exists next to that directory — wakaru's unpack
+ * output for that original file. audit/map treat this output as read-only
+ * reference material and never scan it (unlike webcrack's
  * `<name>.unpacked/`, whose contents ARE scanned in place of the
  * superseded original).
+ *
+ * Deliberately checks only the immediate parent, not every ancestor
+ * segment: matching any ancestor let an unrelated host path component
+ * (e.g. extracting under a directory that happens to be named
+ * `cases.wakaru`) zero out an entire audit by accident. Requiring the
+ * sibling `.js` raises the bar for a lookalike directory shipped inside
+ * an extension's own zip, at the same risk level this codebase already
+ * accepts for isSupersededByUnpack's sibling-`.unpacked` check above.
  */
 export function isWakaruOutput(file) {
-  return file.split(path.sep).some((seg) => seg.endsWith('.wakaru'));
+  const parentDir = path.dirname(file);
+  const parentName = path.basename(parentDir);
+  if (!parentName.endsWith('.wakaru')) return false;
+
+  const siblingJs = path.join(path.dirname(parentDir), `${parentName.slice(0, -'.wakaru'.length)}.js`);
+  return existsSync(siblingJs);
 }

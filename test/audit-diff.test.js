@@ -249,8 +249,9 @@ test('diffExtensions reports endpoints from added and removed files, not just mo
   rmSync(right, { recursive: true });
 });
 
-test('auditExtension never scans files inside a <name>.wakaru directory', () => {
+test('auditExtension never scans files inside a <name>.wakaru directory with a sibling <name>.js', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  writeFileSync(path.join(dir, 'bundle.js'), 'minified');
   mkdirSync(path.join(dir, 'bundle.wakaru'));
   writeFileSync(path.join(dir, 'bundle.wakaru', 'module-0.js'), 'eval("danger"); fetch("https://evil.example.com");');
   writeFileSync(path.join(dir, 'clean.js'), 'console.log("fine");');
@@ -261,15 +262,45 @@ test('auditExtension never scans files inside a <name>.wakaru directory', () => 
   rmSync(dir, { recursive: true });
 });
 
-test('buildEntryPointMap readability stats ignore files inside a <name>.wakaru directory', () => {
+test('auditExtension still scans a shipped <name>.wakaru lookalike with no sibling <name>.js', () => {
+  // A directory named like wakaru's own output convention, but with no
+  // corresponding original .js file next to it, is not provably crxray's
+  // own output — an extension could ship one deliberately to hide code
+  // from the auditor. It must still be scanned.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  mkdirSync(path.join(dir, 'evil.wakaru'));
+  writeFileSync(path.join(dir, 'evil.wakaru', 'payload.js'), 'eval("danger"); fetch("https://evil.example.com");');
+
+  const audit = auditExtension(dir, null, null);
+  assert.equal(audit.findings.length, 2);
+  assert.equal(audit.endpoints.length, 1);
+  rmSync(dir, { recursive: true });
+});
+
+test('buildEntryPointMap readability stats ignore files inside a <name>.wakaru directory with a sibling <name>.js', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-map-'));
+  writeFileSync(path.join(dir, 'bundle.js'), 'x'.repeat(2000));
   mkdirSync(path.join(dir, 'bundle.wakaru'));
   writeFileSync(path.join(dir, 'bundle.wakaru', 'module-0.js'), 'x'.repeat(2000));
   writeFileSync(path.join(dir, 'clean.js'), 'console.log("fine");\n');
 
   const map = buildEntryPointMap(dir, null);
+  assert.equal(map.readability.total, 2);
+  assert.equal(map.readability.files.length, 2);
+  assert.deepEqual(
+    map.readability.files.map((f) => f.file).sort(),
+    ['bundle.js', 'clean.js']
+  );
+  rmSync(dir, { recursive: true });
+});
+
+test('buildEntryPointMap still counts a shipped <name>.wakaru lookalike with no sibling <name>.js', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-map-'));
+  mkdirSync(path.join(dir, 'evil.wakaru'));
+  writeFileSync(path.join(dir, 'evil.wakaru', 'payload.js'), 'x'.repeat(2000));
+
+  const map = buildEntryPointMap(dir, null);
   assert.equal(map.readability.total, 1);
-  assert.equal(map.readability.files.length, 1);
-  assert.equal(map.readability.files[0].file, 'clean.js');
+  assert.equal(map.readability.files[0].file, path.join('evil.wakaru', 'payload.js'));
   rmSync(dir, { recursive: true });
 });
