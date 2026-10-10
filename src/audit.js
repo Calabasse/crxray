@@ -67,6 +67,53 @@ const SUSPICIOUS_PATTERNS = [
     re: /createElement\s*\(\s*['"]script['"]\s*\)/g,
     severity: 'medium',
   },
+  {
+    id: 'chrome-debugger',
+    label: 'chrome.debugger access',
+    re: /\b(?:chrome|browser)\.debugger\.(attach|sendCommand)\s*\(/g,
+    severity: 'high',
+  },
+  {
+    id: 'cdp-dangerous-command',
+    label: 'CDP dangerous command',
+    re: /["'](Runtime\.evaluate|Network\.enable|Input\.dispatch|Fetch\.enable|Page\.captureScreenshot)["']/g,
+    severity: 'high',
+  },
+  // Secret patterns match a real credential SHAPE (prefix + charset + length),
+  // never a variable name -- "a variable named password/apikey" is not a
+  // secret, it is a password manager's own domain vocabulary. Confirmed as a
+  // real false-positive class in a competing tool's secrets detector before
+  // these were written.
+  {
+    id: 'secret-aws-key',
+    label: 'AWS access key',
+    re: /\bAKIA[0-9A-Z]{16}\b/g,
+    severity: 'high',
+  },
+  {
+    id: 'secret-github-token',
+    label: 'GitHub token',
+    re: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/g,
+    severity: 'high',
+  },
+  {
+    id: 'secret-stripe-key',
+    label: 'Stripe key',
+    re: /\b[sp]k_(live|test)_[A-Za-z0-9]{24,}\b/g,
+    severity: 'high',
+  },
+  {
+    id: 'secret-slack-token',
+    label: 'Slack token',
+    re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+    severity: 'high',
+  },
+  {
+    id: 'secret-rsa-private-key',
+    label: 'RSA/SSH private key block',
+    re: /-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----/g,
+    severity: 'high',
+  },
 ];
 
 // Permission <-> API-call pairs worth correlating: a permission *declared*
@@ -82,6 +129,7 @@ const PERMISSION_PATTERN_PAIRS = [
   { permission: 'cookies', patternId: 'chrome-cookies' },
   { permission: 'webRequest', patternId: 'chrome-webRequest' },
   { permission: 'scripting', patternId: 'scripting-execute-script' },
+  { permission: 'debugger', patternId: 'chrome-debugger' },
 ];
 
 const URL_RE = /https?:\/\/[^\s"'`)]+/g;

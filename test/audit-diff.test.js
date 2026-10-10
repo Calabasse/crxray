@@ -192,6 +192,106 @@ test('auditExtension correlates a declared permission with a browser.* API call 
   rmSync(dir, { recursive: true });
 });
 
+test('scanSource flags chrome.debugger access and CDP dangerous commands', () => {
+  // Found while evaluating crx-forensics as an EP+ candidate: it detects this
+  // real pattern correctly (Cloud9 RAT / VenomSoftX style CDP abuse) but its
+  // own risk scorer never counts the finding. Porting the detection here,
+  // not the scorer.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: ['debugger'], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'bg.js': [
+        'chrome.debugger.attach({ tabId: 1 }, "1.3", () => {});',
+        'chrome.debugger.sendCommand({ tabId: 1 }, "Runtime.evaluate", { expression: "document.cookie" });',
+        'chrome.debugger.sendCommand({ tabId: 1 }, "Network.enable", {});',
+      ].join('\n'),
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const patterns = audit.findings.map((f) => f.pattern);
+  assert.ok(patterns.includes('chrome.debugger access'));
+  assert.ok(patterns.filter((p) => p === 'CDP dangerous command').length >= 2);
+  rmSync(dir, { recursive: true });
+});
+
+test('auditExtension correlates the debugger permission with chrome.debugger access', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: ['debugger'], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, { manifest, files: { 'bg.js': 'chrome.debugger.attach({ tabId: 1 }, "1.3", () => {});' } });
+
+  const audit = auditExtension(dir, manifest, summary);
+  assert.ok(audit.correlations.some((c) => c.permission === 'debugger' && c.pattern === 'chrome.debugger access'));
+  rmSync(dir, { recursive: true });
+});
+
+test('scanSource flags real secret shapes: AWS key, GitHub token, Stripe key, Slack token, RSA private key', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  // Assembled at runtime from split halves, never as one contiguous literal
+  // in this test's own source: a complete fake secret in one unbroken
+  // string trips GitHub's push-protection scanner on this file (confirmed).
+  // The fixture file crxray's regex actually scans still gets the full,
+  // unbroken string below -- only this source file's own text is split.
+  const fakeAwsKey = ['AKIA', 'ABCDEFGHIJKLMNOP'].join('');
+  const fakeGhToken = ['ghp_', 'abcdefghijklmnopqrstuvwxyz0123456789'].join('');
+  const fakeStripeKey = ['sk_live_', 'abcdefghijklmnopqrstuvwx'].join('');
+  const fakeSlackToken = ['xoxb-111111111111-222222222222-', 'abcdefghijklmnopqrstuvwx'].join('');
+
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'bg.js': [
+        `const awsKey = "${fakeAwsKey}";`,
+        `const ghToken = "${fakeGhToken}";`,
+        `const stripeKey = "${fakeStripeKey}";`,
+        `const slackToken = "${fakeSlackToken}";`,
+        '// -----BEGIN RSA PRIVATE KEY-----',
+      ].join('\n'),
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const patterns = new Set(audit.findings.map((f) => f.pattern));
+  assert.ok(patterns.has('AWS access key'));
+  assert.ok(patterns.has('GitHub token'));
+  assert.ok(patterns.has('Stripe key'));
+  assert.ok(patterns.has('Slack token'));
+  assert.ok(patterns.has('RSA/SSH private key block'));
+  rmSync(dir, { recursive: true });
+});
+
+test('secret patterns do not flag ordinary password/apiKey identifiers with no real secret shape', () => {
+  // This is the exact false-positive crx-forensics produced on Bitwarden:
+  // "variable named password/apikey" matched the extension's own domain
+  // vocabulary, not an actual embedded credential. Shape-matching avoids it.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'bg.js': [
+        'function setPassword(password) { this.password = password; }',
+        'const apiKey = config.apiKey;',
+        'export const PASSWORD_FIELD_NAME = "password";',
+      ].join('\n'),
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const secretPatterns = audit.findings.filter((f) =>
+    ['AWS access key', 'GitHub token', 'Stripe key', 'Slack token', 'RSA/SSH private key block'].includes(f.pattern)
+  );
+  assert.deepEqual(secretPatterns, []);
+  rmSync(dir, { recursive: true });
+});
+
 test('auditExtension does not double-count a bundle superseded by its .unpacked copy', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
   const manifest = {
