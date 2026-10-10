@@ -2,14 +2,25 @@
 // extension installs/updates, so they serve the canonical CRX for an ID.
 // Google's endpoint returns 204 (treated as "not found" below) for any
 // extension whose manifest requires a newer Chrome than the prodversion
-// this declares, so this value WILL go stale as Chrome keeps shipping --
-// confirmed live on 2026-10-10 against Bitwarden, a then-current, 8M-user
-// extension that a since-updated version of this constant failed against.
-// Pass chromeVersion to crxUrl/downloadCrx (or --chrome-version on the CLI)
-// to work around it without waiting for this default to be bumped again.
-const CHROME_VERSION = '142.0.7444.0';
+// this declares. A real version string goes stale the moment it ships --
+// confirmed twice in one session: the previous value here (131.x) failed
+// against Bitwarden on 2026-10-10, and the real-current replacement
+// (142.x) was independently found to already be ~a year stale again by
+// the time of review, without the code itself changing at all. Using a
+// permanent high sentinel instead: confirmed live on 2026-10-10 that
+// Google's endpoint accepts prodversion=999.0.0.0 and serves the normal
+// 302 redirect + real CRX, identical to a current real version string,
+// for the same extension that failed against the stale 131.x value.
+// Nothing here needs bumping again. (Edge's endpoint uses the same
+// Omaha-protocol version check but wasn't independently confirmed with
+// this sentinel -- no live Edge-catalog extension ID was on hand to test
+// against; --chrome-version remains the escape hatch if that ever needs
+// a real version string instead.)
+const CHROME_VERSION = '999.0.0.0';
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 const MAX_CRX_SIZE = 200 * 1024 * 1024; // 200MB
+
+const CHROME_VERSION_RE = /^\d{1,4}(\.\d{1,5}){0,3}$/;
 
 // Hosts the CRX download is allowed to land on after following redirects.
 // clients2.google.com / edge.microsoft.com are the endpoints we request
@@ -24,6 +35,9 @@ const ALLOWED_HOSTS = {
 };
 
 export function crxUrl(id, store = 'chrome', chromeVersion = CHROME_VERSION) {
+  if (!CHROME_VERSION_RE.test(chromeVersion)) {
+    throw new Error(`Invalid --chrome-version "${chromeVersion}": expected digits and dots only (e.g. 142.0.7444.0).`);
+  }
   if (store === 'edge') {
     const x = encodeURIComponent(`id=${id}&installsource=ondemand&uc`);
     return `https://edge.microsoft.com/extensionwebstorebase/v1/crx?response=redirect&prodversion=${chromeVersion}&acceptformat=crx3&x=${x}`;
@@ -52,7 +66,10 @@ export async function downloadFromUrl(
     const res = await fetch(url, { redirect: 'follow', signal: controller.signal });
 
     if (res.status === 204 || res.status === 404) {
-      throw new Error(`Extension ${id} not found. It may be unlisted, removed, or the ID may be wrong.`);
+      throw new Error(
+        `Extension ${id} not found. It may be unlisted, removed, the ID may be wrong, or it may require a newer ` +
+          `Chrome/Edge than this request declared -- try --chrome-version <higher version>.`
+      );
     }
     if (!res.ok) {
       throw new Error(`Download failed for ${id}: HTTP ${res.status} ${res.statusText}`);

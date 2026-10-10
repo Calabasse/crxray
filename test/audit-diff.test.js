@@ -242,6 +242,11 @@ test('scanSource flags real secret shapes: AWS key, GitHub token, Stripe key, Sl
   const fakeGhToken = ['ghp_', 'abcdefghijklmnopqrstuvwxyz0123456789'].join('');
   const fakeStripeKey = ['sk_live_', 'abcdefghijklmnopqrstuvwx'].join('');
   const fakeSlackToken = ['xoxb-111111111111-222222222222-', 'abcdefghijklmnopqrstuvwx'].join('');
+  // A real key block always has a substantial base64 body after the
+  // header; a bare header constant (which crypto libraries carry for
+  // format detection) no longer matches on its own -- see the negative
+  // test below.
+  const fakeRsaBody = ['MIIEowIBAAKCAQEA', 'qwertyuiopASDFGHJKLzxcvbnmQWERTYUIOPasdfghjklZXCVBNM1234567890'].join('');
 
   makeExtension(dir, {
     manifest,
@@ -252,6 +257,8 @@ test('scanSource flags real secret shapes: AWS key, GitHub token, Stripe key, Sl
         `const stripeKey = "${fakeStripeKey}";`,
         `const slackToken = "${fakeSlackToken}";`,
         '// -----BEGIN RSA PRIVATE KEY-----',
+        fakeRsaBody,
+        '// -----END RSA PRIVATE KEY-----',
       ].join('\n'),
     },
   });
@@ -292,6 +299,79 @@ test('secret patterns do not flag ordinary password/apiKey identifiers with no r
   rmSync(dir, { recursive: true });
 });
 
+test('secret patterns do not flag a Stripe publishable key, a placeholder token, or a bare PEM header', () => {
+  // Found by independent review: pk_ (publishable) keys are designed to
+  // ship in client code -- any extension with Stripe Checkout has one, and
+  // it isn't a secret. A placeholder like "xoxb-your-token-here" has no
+  // real workspace-id digits. A bare PEM header with no body is a crypto
+  // library's own format-detection constant, not an embedded key.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'bg.js': [
+        'const stripePk = "pk_live_abcdefghijklmnopqrstuvwx";',
+        'const placeholder = "xoxb-your-token-here";',
+        'const pemHeaderConstant = "-----BEGIN PRIVATE KEY-----";',
+      ].join('\n'),
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const secretPatterns = audit.findings.filter((f) =>
+    ['AWS access key', 'GitHub token', 'Stripe key', 'Slack token', 'RSA/SSH private key block'].includes(f.pattern)
+  );
+  assert.deepEqual(secretPatterns, []);
+  rmSync(dir, { recursive: true });
+});
+
+test('CDP dangerous-command pattern matches real Input.dispatch* method names, not just the bare verb', () => {
+  // Found by independent review: the original pattern required a closing
+  // quote immediately after "Input.dispatch", but real CDP commands are
+  // Input.dispatchKeyEvent / dispatchMouseEvent / dispatchTouchEvent --
+  // the bare form never appears in real code, so it never matched anything.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: ['debugger'], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'bg.js': 'chrome.debugger.sendCommand({ tabId: 1 }, "Input.dispatchKeyEvent", { type: "keyDown" });',
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  assert.ok(audit.findings.some((f) => f.pattern === 'CDP dangerous command'));
+  rmSync(dir, { recursive: true });
+});
+
+test('affiliate-link check matches the tag= parameter and ignores === comparisons', () => {
+  // Found by independent review: "tag=" is Amazon's own affiliate parameter
+  // and the single most common real case, which the original pattern
+  // (ref/aff/affiliate/utm_source only) missed entirely; and the original
+  // [+=] matched the first "=" of "===", flagging an ordinary comparison.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'bg.js': [
+        'a.href = base + "?tag=evil-20";',
+        'if (location.href === "https://example.com/?ref=readme") { report(); }',
+      ].join('\n'),
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const hits = audit.findings.filter((f) => f.pattern === 'Affiliate link injection');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].line, 1);
+  rmSync(dir, { recursive: true });
+});
+
 test('scanSource flags a high-entropy blob paired with a decode call, and leaves readable code alone', () => {
   // Entropy alone is never enough -- see the companion tests below for why.
   // The signal is a high-entropy blob PAIRED with a decode/execute call
@@ -300,10 +380,12 @@ test('scanSource flags a high-entropy blob paired with a decode call, and leaves
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
   const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
   const summary = summarizeManifest(manifest);
-  // Deterministic high-entropy filler: 94 distinct printable-ASCII symbols,
-  // evenly spread, well past the 6.0 bits/char threshold -- no real
-  // randomness needed for a reproducible test.
-  const highEntropy = Array.from({ length: 600 }, (_, i) => String.fromCharCode(33 + ((i * 37) % 94))).join('');
+  // Deterministic high-entropy filler: real base64 alphabet only (required
+  // by the per-literal check below), evenly cycled so entropy approaches
+  // its true ceiling of log2(64) = 6.0 -- no real randomness needed for a
+  // reproducible test.
+  const base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const highEntropy = Array.from({ length: 1280 }, (_, i) => base64Alphabet[(i * 17) % base64Alphabet.length]).join('');
   const readable = 'function greet(name) {\n  return "Hello, " + name + "!";\n}\n'.repeat(20);
   makeExtension(dir, {
     manifest,
@@ -344,6 +426,41 @@ test('entropy check does not flag a bare high-entropy blob with no decode call a
     files: {
       'font-asset.js': `module.exports = "data:font/woff2;base64,${base64Payload}";`,
       'schema-asset.js': `export const schema = decodeProtobufSchema("${base64Payload}");`,
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const entropyHits = audit.findings.filter((f) => f.pattern === 'High entropy (possible obfuscation)');
+  assert.deepEqual(entropyHits, []);
+  rmSync(dir, { recursive: true });
+});
+
+test('entropy check does not flag an embedded font sitting near an UNRELATED decode call in a large file', () => {
+  // Found by independent review: an earlier file-wide version of the
+  // companion check (any decode call anywhere in the file, no matter how
+  // far away) still flagged a legitimate embedded font as "possible
+  // obfuscation" whenever the same large bundle happened to contain an
+  // unrelated atob() call somewhere else in the same file, e.g. a JWT
+  // parser thousands of characters away. Moving to a proximity window
+  // around the literal's own position, not "anywhere in the file", fixes
+  // this directly: the unrelated call is far outside the window.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  const base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const base64Payload = Array.from({ length: 1280 }, (_, i) => base64Alphabet[(i * 17) % base64Alphabet.length]).join('');
+  const padding = '// unrelated vendor code\n'.repeat(200); // thousands of chars of real distance
+  makeExtension(dir, {
+    manifest,
+    files: {
+      // The literal itself is pure base64 (no "data:" prefix) so it still
+      // qualifies as a high-entropy candidate; what's under test is
+      // whether the FAR-AWAY atob() call wrongly counts as its companion.
+      'vendor-bundle.js': [
+        `const embeddedFont = "${base64Payload}";`,
+        padding,
+        'function parseJwt(token) { return JSON.parse(atob(token.split(".")[1])); }',
+      ].join('\n'),
     },
   });
 

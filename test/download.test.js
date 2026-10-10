@@ -27,6 +27,23 @@ test('crxUrl accepts a chromeVersion override, for when the built-in default goe
   assert.match(edgeUrl, /prodversion=142\.0\.7444\.0/);
 });
 
+test('crxUrl uses the built-in sentinel version by default', () => {
+  // Confirmed live on 2026-10-10: Google's endpoint accepts a permanently
+  // high version (999.0.0.0) exactly like a real current one, so this
+  // never needs bumping the way a real version string does.
+  const url = crxUrl('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'chrome');
+  assert.match(url, /prodversion=999\.0\.0\.0/);
+});
+
+test('crxUrl rejects a chromeVersion override that is not digits and dots', () => {
+  // Found by independent review: the override was passed straight into a
+  // URL query string with no validation, so an empty string or anything
+  // containing "&" could inject extra query parameters.
+  assert.throws(() => crxUrl('a'.repeat(32), 'chrome', ''), /Invalid --chrome-version/);
+  assert.throws(() => crxUrl('a'.repeat(32), 'chrome', '1&x=evil'), /Invalid --chrome-version/);
+  assert.throws(() => crxUrl('a'.repeat(32), 'chrome', 'latest'), /Invalid --chrome-version/);
+});
+
 async function withServer(handler, fn) {
   const server = createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

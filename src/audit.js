@@ -74,9 +74,13 @@ const SUSPICIOUS_PATTERNS = [
     severity: 'high',
   },
   {
+    // \w* on Input.dispatch -- the real CDP methods are dispatchKeyEvent /
+    // dispatchMouseEvent / dispatchTouchEvent, never the bare verb. Found by
+    // independent review: the bare form never matches a real command and
+    // was dead weight. Backtick literals accepted alongside quotes.
     id: 'cdp-dangerous-command',
     label: 'CDP dangerous command',
-    re: /["'](Runtime\.evaluate|Network\.enable|Input\.dispatch|Fetch\.enable|Page\.captureScreenshot)["']/g,
+    re: /["'`](Runtime\.evaluate|Network\.enable|Input\.dispatch\w*|Fetch\.enable|Page\.captureScreenshot)["'`]/g,
     severity: 'high',
   },
   // Secret patterns match a real credential SHAPE (prefix + charset + length),
@@ -85,33 +89,45 @@ const SUSPICIOUS_PATTERNS = [
   // real false-positive class in a competing tool's secrets detector before
   // these were written.
   {
+    // ASIA = temporary/session AWS credentials, alongside the long-lived AKIA.
     id: 'secret-aws-key',
     label: 'AWS access key',
-    re: /\bAKIA[0-9A-Z]{16}\b/g,
+    re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
     severity: 'high',
   },
   {
+    // github_pat_ = fine-grained PATs, alongside the classic gh[pousr]_ prefixes.
     id: 'secret-github-token',
     label: 'GitHub token',
-    re: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/g,
+    re: /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b/g,
     severity: 'high',
   },
   {
+    // pk_ (publishable) is designed to ship in client code, not a secret --
+    // dropped. sk_/rk_ (secret/restricted) are real credentials, kept.
+    // Found by independent review: the original pk_ match flagged every
+    // extension with ordinary Stripe Checkout as a high-severity finding.
     id: 'secret-stripe-key',
     label: 'Stripe key',
-    re: /\b[sp]k_(live|test)_[A-Za-z0-9]{24,}\b/g,
+    re: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g,
     severity: 'high',
   },
   {
+    // Requires the numeric workspace-id segment real Slack tokens always
+    // have right after the type prefix -- excludes placeholder text like
+    // "xoxb-your-token-here", which the un-anchored version matched.
     id: 'secret-slack-token',
     label: 'Slack token',
-    re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+    re: /\bxox[baprs]-\d{6,}-[A-Za-z0-9-]{10,}\b/g,
     severity: 'high',
   },
   {
+    // Requires a real base64 body after the header, not just the header
+    // constant -- crypto libraries carry the bare header string for format
+    // detection/formatting, which the original (header-only) match flagged.
     id: 'secret-rsa-private-key',
     label: 'RSA/SSH private key block',
-    re: /-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----/g,
+    re: /-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----[A-Za-z0-9+/=\s]{64,}/g,
     severity: 'high',
   },
   // Dark patterns: user-hostile, not necessarily malicious. Kept to two
@@ -121,45 +137,78 @@ const SUSPICIOUS_PATTERNS = [
   // completely normal screenshot feature), so they're left for later rather
   // than shipped as a noisy single-call regex.
   {
+    // =(?!=) excludes ===/== comparisons, which the plain [+=] matched.
+    // utm_source dropped (pure analytics, not monetization); tag/affid/
+    // aff_id/clickid added -- tag= is Amazon's own affiliate parameter and
+    // the single most common real case, which the original pattern missed
+    // entirely. \n excluded from the gap so a match can't span statements
+    // in code without semicolons. Found by independent review.
     id: 'affiliate-link-injection',
     label: 'Affiliate link injection',
-    re: /href\s*[+=][^;]{0,80}?[?&](?:ref|aff|affiliate|utm_source)=/gi,
+    re: /href\s*(?:\+=|=(?!=))[^;\n]{0,80}?[?&](?:ref|aff|affiliate|affid|aff_id|clickid|tag)=/gi,
     severity: 'medium',
   },
   {
+    // {0,200} bounds the gap between the store-URL prefix and "review" --
+    // the original unbounded [^"'\s]* backtracks catastrophically with no
+    // quote/whitespace anywhere nearby: confirmed quadratic (2.6s on 400KB
+    // of adversarial input) by independent review, reproduced directly.
+    // A real review URL is a short path segment, never anywhere near 200
+    // chars, so this costs no real coverage.
     id: 'review-nagging-url',
     label: 'Review-nagging store URL',
-    re: /(?:chromewebstore\.google\.com\/detail|chrome\.google\.com\/webstore\/detail|addons\.mozilla\.org\/[a-z-]+\/addon)\/[^"'\s]*review/gi,
+    re: /(?:chromewebstore\.google\.com\/detail|chrome\.google\.com\/webstore\/detail|addons\.mozilla\.org\/[a-z-]+\/addon)\/[^"'\s]{0,200}review/gi,
     severity: 'low',
   },
 ];
 
-const ENTROPY_MIN_FILE_SIZE = 500;
+// Entropy is checked per STRING LITERAL, not per file. An earlier whole-file
+// version was found by independent review to score high on any file that's
+// mostly non-Latin text (a CJK locale bundle measured 11.6 bits/char) while
+// missing real obfuscator.io-style JS entirely (hex-escaped/underscore-heavy
+// code measured 3.8 -- it never looks like random bytes, because it's still
+// syntactically normal JS). Restricting to literals that are base64-alphabet
+// end to end fixes the first problem: legitimate non-Latin text isn't
+// base64, so it can't match regardless of its own entropy.
+const ENTROPY_MIN_LITERAL_LENGTH = 200;
 const ENTROPY_THRESHOLD = 6.0;
+const BASE64ISH_RE = /^[A-Za-z0-9+/=\s]+$/;
 
-// A high-entropy file only gets reported when the SAME file also contains a
-// decode/execute call -- eval, new Function, atob, a dynamically-created
-// <script> tag. A bare embedded blob with no decode step next to it is
-// almost always a legitimate asset (a font, an image, a protobuf schema):
-// base64-encoded binary data is inherently high-entropy no matter what it
-// encodes, and real obfuscated payloads pair the blob with exactly this
-// kind of decode-and-run step in the same file -- that pairing is the
-// actual signal, not entropy alone. Confirmed against three real false
-// positives this session, none of which had a decode call anywhere nearby:
-// a Bitwarden-adjacent wasm hex blob, 45 embedded fonts in Scrnli
-// (`module.exports = "data:font/woff2;base64,...";`), and 8 embedded
-// protobuf schemas in Grammarly passed as plain function-call arguments --
-// a different enough shape from the font case that chasing the syntax
-// pattern-by-pattern would never fully close; requiring the companion
-// decode signal does, in one general mechanism.
+// A high-entropy literal only gets reported when a decode/execute call --
+// eval, new Function, atob, a dynamically-created <script> tag -- appears
+// within this many characters of it in the SAME file. A bare embedded blob
+// with no decode step nearby is almost always a legitimate asset (a font,
+// an embedded protobuf schema); real obfuscated payloads pair the blob with
+// exactly this kind of decode-and-run step close to where it's used. An
+// earlier, file-wide version of this check (any companion match anywhere in
+// the file) was found by independent review to still flag a legitimate
+// embedded font sitting anywhere near an unrelated atob() call elsewhere in
+// the same bundle -- the same false-positive class the file-wide check was
+// meant to fix, just moved rather than closed. This is a real but partial
+// mitigation, not an evasion-proof one: `(0,eval)(x)`, `window["eval"](x)`,
+// `Function(x)()` without `new`, `setTimeout(x, 0)`, and decoding in one
+// file to execute in another are all known to slip past it; closing those
+// needs real control-flow analysis (see the sandboxed-execution item in the
+// project's own backlog), not a wider regex.
+const ENTROPY_PROXIMITY_CHARS = 500;
 const ENTROPY_COMPANION_PATTERN_IDS = new Set(['eval', 'function-constructor', 'atob', 'external-script-tag']);
+
+// Safe against catastrophic backtracking: each alternative's negated class
+// excludes backslash, which the escaped-char alternative requires, so the
+// two never compete for the same character and the match cost is linear in
+// the literal's own length regardless of input shape.
+const STRING_LITERAL_RE = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
 
 function shannonEntropy(str) {
   const freq = new Map();
-  for (const ch of str) freq.set(ch, (freq.get(ch) ?? 0) + 1);
+  let len = 0;
+  for (const ch of str) {
+    freq.set(ch, (freq.get(ch) ?? 0) + 1);
+    len++;
+  }
   let entropy = 0;
   for (const count of freq.values()) {
-    const p = count / str.length;
+    const p = count / len;
     entropy -= p * Math.log2(p);
   }
   return entropy;
@@ -310,18 +359,29 @@ function scanSource(dir) {
     const content = readFileSync(file, 'utf8');
     const lines = content.split('\n');
 
-    let entropyValue = null;
-    if (content.length >= ENTROPY_MIN_FILE_SIZE) {
-      const entropy = shannonEntropy(content);
-      if (entropy >= ENTROPY_THRESHOLD) entropyValue = entropy;
+    const highEntropyLiterals = [];
+    STRING_LITERAL_RE.lastIndex = 0;
+    let literalMatch;
+    while ((literalMatch = STRING_LITERAL_RE.exec(content)) !== null) {
+      const inner = literalMatch[0].slice(1, -1);
+      if (inner.length < ENTROPY_MIN_LITERAL_LENGTH || !BASE64ISH_RE.test(inner)) continue;
+      const entropy = shannonEntropy(inner);
+      if (entropy >= ENTROPY_THRESHOLD) {
+        highEntropyLiterals.push({
+          index: literalMatch.index,
+          end: literalMatch.index + literalMatch[0].length,
+          entropy,
+        });
+      }
     }
-    let hasDecodeSignal = false;
+
+    const companionPositions = [];
 
     for (const pattern of SUSPICIOUS_PATTERNS) {
       pattern.re.lastIndex = 0;
       let match;
       while ((match = pattern.re.exec(content)) !== null) {
-        if (ENTROPY_COMPANION_PATTERN_IDS.has(pattern.id)) hasDecodeSignal = true;
+        if (ENTROPY_COMPANION_PATTERN_IDS.has(pattern.id)) companionPositions.push(match.index);
         const lineStart = content.lastIndexOf('\n', match.index - 1) + 1;
         const line = content.slice(0, match.index).split('\n').length;
         const lineText = lines[line - 1] ?? '';
@@ -340,17 +400,21 @@ function scanSource(dir) {
           line,
           snippet,
         });
-        if (findings.length >= 200) return findings;
       }
     }
 
-    if (entropyValue !== null && hasDecodeSignal) {
+    for (const lit of highEntropyLiterals) {
+      const hasNearbyCompanion = companionPositions.some(
+        (pos) => pos >= lit.index - ENTROPY_PROXIMITY_CHARS && pos <= lit.end + ENTROPY_PROXIMITY_CHARS
+      );
+      if (!hasNearbyCompanion) continue;
+      const line = content.slice(0, lit.index).split('\n').length;
       findings.push({
         severity: 'medium',
         pattern: 'High entropy (possible obfuscation)',
         file: rel,
-        line: 1,
-        snippet: `entropy=${entropyValue.toFixed(2)}`,
+        line,
+        snippet: `entropy=${lit.entropy.toFixed(2)}`,
       });
     }
   }
