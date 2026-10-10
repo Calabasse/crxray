@@ -9,6 +9,7 @@ import { auditExtension } from './audit.js';
 import { buildEntryPointMap } from './map.js';
 import { beautifyDirectory } from './beautify.js';
 import { deobfuscateDirectory } from './deobfuscate.js';
+import { unpackWithWakaru } from './wakaru.js';
 import { diffExtensions } from './diff.js';
 import { isDirectory } from './walk.js';
 import { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
@@ -22,6 +23,7 @@ export { auditExtension, formatAuditReport } from './audit.js';
 export { buildEntryPointMap } from './map.js';
 export { beautifyDirectory } from './beautify.js';
 export { deobfuscateDirectory } from './deobfuscate.js';
+export { unpackWithWakaru } from './wakaru.js';
 export { diffExtensions, formatDiffReport } from './diff.js';
 export { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
 
@@ -37,6 +39,7 @@ export { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
  * @param {boolean} [opts.audit] - run security audit after unpack
  * @param {boolean} [opts.map] - include entry-point map (always included with audit)
  * @param {boolean} [opts.deobfuscate] - deobfuscate all JS via webcrack
+ * @param {boolean} [opts.unpackWithWakaru] - structurally unpack bundles via `npx wakaru`, independent of --deobfuscate
  * @param {boolean} [opts.beautify] - beautify all JS via js-beautify
  * @param {boolean} [opts.quiet] - suppress post-process logs
  * @returns {Promise<object>}
@@ -129,6 +132,10 @@ async function resolveDiffTarget(input, opts) {
 
 async function runPostProcess(outDir, manifest, summary, opts, { crx, id } = {}) {
   const result = {};
+
+  if (opts.unpackWithWakaru) {
+    result.wakaru = await unpackWithWakaru(outDir, { quiet: opts.quiet });
+  }
 
   if (opts.deobfuscate) {
     result.deobfuscate = await deobfuscateDirectory(outDir, { quiet: opts.quiet });
