@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { buildEntryPointMap } from './map.js';
-import { walkFiles, relPath, isSupersededByUnpack } from './walk.js';
+import { walkFiles, relPath, isSupersededByUnpack, isWakaruOutput } from './walk.js';
 
 const HIGH_RISK_PERMISSIONS = new Set([
   'webRequest',
@@ -172,7 +172,7 @@ function scanSource(dir) {
   const jsFiles = walkFiles(dir, { extensions: ['.js'] });
 
   for (const file of jsFiles) {
-    if (isSupersededByUnpack(file)) continue;
+    if (isSupersededByUnpack(file) || isWakaruOutput(file)) continue;
     const rel = relPath(dir, file);
     const content = readFileSync(file, 'utf8');
     const lines = content.split('\n');
@@ -203,7 +203,7 @@ function collectEndpoints(dir) {
   const jsFiles = walkFiles(dir, { extensions: ['.js'] });
 
   for (const file of jsFiles) {
-    if (isSupersededByUnpack(file)) continue;
+    if (isSupersededByUnpack(file) || isWakaruOutput(file)) continue;
     const content = readFileSync(file, 'utf8');
     for (const url of collectEndpointsFromContent(content)) endpoints.add(url);
   }

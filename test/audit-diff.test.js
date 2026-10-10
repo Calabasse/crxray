@@ -248,3 +248,15 @@ test('diffExtensions reports endpoints from added and removed files, not just mo
   rmSync(left, { recursive: true });
   rmSync(right, { recursive: true });
 });
+
+test('auditExtension never scans files inside a <name>.wakaru directory', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  mkdirSync(path.join(dir, 'bundle.wakaru'));
+  writeFileSync(path.join(dir, 'bundle.wakaru', 'module-0.js'), 'eval("danger"); fetch("https://evil.example.com");');
+  writeFileSync(path.join(dir, 'clean.js'), 'console.log("fine");');
+
+  const audit = auditExtension(dir, null, null);
+  assert.equal(audit.findings.length, 0);
+  assert.equal(audit.endpoints.length, 0);
+  rmSync(dir, { recursive: true });
+});
