@@ -304,3 +304,25 @@ test('buildEntryPointMap still counts a shipped <name>.wakaru lookalike with no 
   assert.equal(map.readability.files[0].file, path.join('evil.wakaru', 'payload.js'));
   rmSync(dir, { recursive: true });
 });
+
+test('diffExtensions never reports files inside a <name>.wakaru directory as added/removed/modified', () => {
+  const left = mkdtempSync(path.join(tmpdir(), 'crxray-left-'));
+  const right = mkdtempSync(path.join(tmpdir(), 'crxray-right-'));
+
+  makeExtension(left, {
+    manifest: { name: 'Ext', version: '1.0.0', manifest_version: 3 },
+    files: { 'bundle.js': 'left', 'bundle.wakaru/module-0.js': 'left wakaru output' },
+  });
+  makeExtension(right, {
+    manifest: { name: 'Ext', version: '1.0.0', manifest_version: 3 },
+    files: { 'bundle.js': 'right', 'bundle.wakaru/module-0.js': 'right wakaru output' },
+  });
+
+  const diff = diffExtensions(left, right);
+  assert.deepEqual(diff.files.added, []);
+  assert.deepEqual(diff.files.removed, []);
+  assert.deepEqual(diff.files.modified.map((f) => f.path), ['bundle.js']);
+
+  rmSync(left, { recursive: true });
+  rmSync(right, { recursive: true });
+});
