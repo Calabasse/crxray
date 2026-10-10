@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { auditExtension, collectEndpointsFromContent } from '../src/audit.js';
+import { auditExtension, collectEndpointsFromContent, formatAuditReport } from '../src/audit.js';
 import { buildEntryPointMap } from '../src/map.js';
 import { diffExtensions } from '../src/diff.js';
 import { summarizeManifest } from '../src/manifest.js';
@@ -111,6 +111,7 @@ test('scanSource flags fetch, WebSocket, sendMessage, and executeScript', () => 
         'const ws = new WebSocket("wss://api.example.com/socket");',
         'chrome.runtime.sendMessage({ type: "ping" });',
         'chrome.scripting.executeScript({ target: { tabId: 1 }, func: () => {} });',
+        'chrome.tabs.executeScript(1, { code: "1" });',
       ].join('\n'),
     },
   });
@@ -120,7 +121,11 @@ test('scanSource flags fetch, WebSocket, sendMessage, and executeScript', () => 
   assert.ok(patterns.includes('fetch()'));
   assert.ok(patterns.includes('new WebSocket()'));
   assert.ok(patterns.includes('chrome.runtime.sendMessage/connect'));
-  assert.ok(patterns.includes('chrome.scripting.executeScript / tabs.executeScript'));
+  // Split into two distinct patterns so a chrome.tabs.executeScript() call
+  // can never be mistaken for the chrome.scripting.executeScript() one --
+  // they have different permission requirements (see PERMISSION_PATTERN_PAIRS).
+  assert.ok(patterns.includes('chrome.scripting.executeScript'));
+  assert.ok(patterns.includes('chrome.tabs.executeScript'));
   rmSync(dir, { recursive: true });
 });
 
@@ -325,4 +330,79 @@ test('diffExtensions never reports files inside a <name>.wakaru directory as add
 
   rmSync(left, { recursive: true });
   rmSync(right, { recursive: true });
+});
+
+test('auditExtension correlates a declared permission with a matching API call and scores it higher', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = {
+    name: 'Cookie Ext', version: '1.0.0', manifest_version: 3,
+    permissions: ['cookies'],
+    background: { service_worker: 'bg.js' },
+  };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, { manifest, files: { 'bg.js': 'chrome.cookies.getAll({}, () => {});' } });
+
+  const audit = auditExtension(dir, manifest, summary);
+  assert.equal(audit.correlations.length, 1);
+  assert.equal(audit.correlations[0].permission, 'cookies');
+  assert.equal(audit.correlations[0].pattern, 'chrome.cookies access');
+  assert.deepEqual(audit.correlations[0].files, ['bg.js']);
+
+  // permission tier (3) + distinct high hit (2) + correlation bonus (2) = 7 -> high
+  // (without the bonus this would be 5 -> medium; this is the intended effect).
+  assert.equal(audit.risk.score, 7);
+  assert.equal(audit.risk.level, 'high');
+
+  const report = formatAuditReport(audit);
+  assert.match(report, /declared permission/i);
+  assert.doesNotMatch(report, /granted permission/i);
+  rmSync(dir, { recursive: true });
+});
+
+test('auditExtension does not correlate a permission with no matching call anywhere', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = {
+    name: 'Quiet Ext', version: '1.0.0', manifest_version: 3,
+    permissions: ['cookies'],
+    background: { service_worker: 'bg.js' },
+  };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, { manifest, files: { 'bg.js': 'console.log("ok");' } });
+
+  const audit = auditExtension(dir, manifest, summary);
+  assert.deepEqual(audit.correlations, []);
+  rmSync(dir, { recursive: true });
+});
+
+test('auditExtension does not correlate a matching call when the permission is not declared', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = {
+    name: 'No Perm Ext', version: '1.0.0', manifest_version: 3,
+    permissions: ['storage'],
+    background: { service_worker: 'bg.js' },
+  };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, { manifest, files: { 'bg.js': 'chrome.cookies.getAll({}, () => {});' } });
+
+  const audit = auditExtension(dir, manifest, summary);
+  assert.deepEqual(audit.correlations, []);
+  rmSync(dir, { recursive: true });
+});
+
+test('auditExtension does not let a chrome.tabs.executeScript call correlate with the scripting permission', () => {
+  // chrome.tabs.executeScript and chrome.scripting.executeScript are two
+  // different APIs with two different permission requirements -- a hit on
+  // the tabs.* one must never credit the unrelated 'scripting' permission.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = {
+    name: 'Tabs Ext', version: '1.0.0', manifest_version: 3,
+    permissions: ['scripting'],
+    background: { service_worker: 'bg.js' },
+  };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, { manifest, files: { 'bg.js': 'chrome.tabs.executeScript(1, { code: "1" });' } });
+
+  const audit = auditExtension(dir, manifest, summary);
+  assert.deepEqual(audit.correlations, []);
+  rmSync(dir, { recursive: true });
 });

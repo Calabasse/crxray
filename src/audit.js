@@ -50,9 +50,15 @@ const SUSPICIOUS_PATTERNS = [
     severity: 'low',
   },
   {
-    id: 'execute-script',
-    label: 'chrome.scripting.executeScript / tabs.executeScript',
-    re: /\b(chrome\.scripting\.executeScript|chrome\.tabs\.executeScript)\s*\(/g,
+    id: 'scripting-execute-script',
+    label: 'chrome.scripting.executeScript',
+    re: /\bchrome\.scripting\.executeScript\s*\(/g,
+    severity: 'high',
+  },
+  {
+    id: 'tabs-execute-script',
+    label: 'chrome.tabs.executeScript',
+    re: /\bchrome\.tabs\.executeScript\s*\(/g,
     severity: 'high',
   },
   {
@@ -61,6 +67,21 @@ const SUSPICIOUS_PATTERNS = [
     re: /createElement\s*\(\s*['"]script['"]\s*\)/g,
     severity: 'medium',
   },
+];
+
+// Permission <-> API-call pairs worth correlating: a permission *declared*
+// in the manifest AND a matching call actually found in the source is a
+// much stronger signal than either alone. Kept deliberately small --
+// each pair here has a real, documented capability link; e.g.
+// `webRequestBlocking` and `tabs` were considered and dropped: neither
+// actually gates the pattern it would have been paired with
+// (`webRequestBlocking` only matters for *blocking* listeners, which the
+// bare `chrome.webRequest` regex can't distinguish from an observing one;
+// `tabs` gates reading tab properties, not script injection).
+const PERMISSION_PATTERN_PAIRS = [
+  { permission: 'cookies', patternId: 'chrome-cookies' },
+  { permission: 'webRequest', patternId: 'chrome-webRequest' },
+  { permission: 'scripting', patternId: 'scripting-execute-script' },
 ];
 
 const URL_RE = /https?:\/\/[^\s"'`)]+/g;
@@ -92,7 +113,8 @@ export function auditExtension(dir, manifest, summary) {
   const findings = scanSource(dir);
   const endpoints = collectEndpoints(dir);
   const flags = manifestFlags(summary);
-  const risk = computeRisk(permissions, findings, summary, flags);
+  const correlations = correlatePermissionsAndFindings(permissions, findings);
+  const risk = computeRisk(permissions, findings, summary, flags, correlations);
 
   return {
     risk,
@@ -100,6 +122,7 @@ export function auditExtension(dir, manifest, summary) {
     findings,
     endpoints,
     flags,
+    correlations,
     entryPoints: map.entryPoints,
     readability: map.readability,
     startHere: map.startHere,
@@ -211,7 +234,31 @@ function collectEndpoints(dir) {
   return [...endpoints].sort().slice(0, 100);
 }
 
-function computeRisk(permissions, findings, summary, flags = []) {
+/**
+ * Correlate declared permissions with matching API-call findings. A
+ * permission alone, or a pattern hit alone, is weaker evidence than both
+ * together -- this says "and found a matching call", not "granted": these
+ * permission arrays include optional permissions the user may never
+ * actually grant at runtime, which static analysis of the manifest alone
+ * can't resolve.
+ */
+function correlatePermissionsAndFindings(permissions, findings) {
+  const declared = new Set([...permissions.high, ...permissions.medium, ...permissions.low]);
+  const patternLabelById = new Map(SUSPICIOUS_PATTERNS.map((p) => [p.id, p.label]));
+  const correlations = [];
+
+  for (const { permission, patternId } of PERMISSION_PATTERN_PAIRS) {
+    if (!declared.has(permission)) continue;
+    const label = patternLabelById.get(patternId);
+    const matchingFiles = [...new Set(findings.filter((f) => f.pattern === label).map((f) => f.file))].sort();
+    if (matchingFiles.length === 0) continue;
+    correlations.push({ permission, pattern: label, files: matchingFiles });
+  }
+
+  return correlations;
+}
+
+function computeRisk(permissions, findings, summary, flags = [], correlations = []) {
   const distinctHighHits = new Set(
     findings.filter((f) => f.severity === 'high').map((f) => `${f.file}:${f.pattern}`)
   ).size;
@@ -226,6 +273,7 @@ function computeRisk(permissions, findings, summary, flags = []) {
   score += distinctMediumHits;
   score += flags.filter((f) => f.severity === 'high').length * 3;
   score += flags.filter((f) => f.severity === 'medium').length * 1;
+  score += correlations.length * 2;
 
   const hasBroadHost =
     permissions.hostAccess.includes('<all_urls>') ||
@@ -268,6 +316,14 @@ export function formatAuditReport(audit) {
   if (audit.flags?.length) {
     lines.push('Manifest flags');
     for (const f of audit.flags) lines.push(`  [${f.severity}] ${f.label}${f.detail ? ` — ${f.detail}` : ''}`);
+    lines.push('');
+  }
+
+  if (audit.correlations?.length) {
+    lines.push('Declared permission + matching API call');
+    for (const c of audit.correlations) {
+      lines.push(`  ${c.permission} -> ${c.pattern} (${c.files.join(', ')})`);
+    }
     lines.push('');
   }
 
