@@ -367,6 +367,24 @@ test('scanSource flags affiliate link injection and review-nagging URLs', () => 
   rmSync(dir, { recursive: true });
 });
 
+test('a finding on a long minified line snippets the match itself, not unrelated text before it', () => {
+  // Found on real code (Honey's vendor bundle): the match lived far past
+  // column 120 on a long single-line file, and the old snippet (first 120
+  // chars of the line) never showed it -- the finding was still correct
+  // (right file/line/pattern), but the preview text was misleading.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  const filler = 'x'.repeat(300);
+  makeExtension(dir, { manifest, files: { 'bg.js': `var ${filler} = 1; eval("danger");` } });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const finding = audit.findings.find((f) => f.pattern === 'eval()');
+  assert.ok(finding, 'expected an eval() finding');
+  assert.match(finding.snippet, /eval\(/);
+  rmSync(dir, { recursive: true });
+});
+
 test('auditExtension does not double-count a bundle superseded by its .unpacked copy', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
   const manifest = {

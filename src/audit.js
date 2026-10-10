@@ -323,8 +323,17 @@ function scanSource(dir) {
       pattern.re.lastIndex = 0;
       let match;
       while ((match = pattern.re.exec(content)) !== null) {
+        const lineStart = content.lastIndexOf('\n', match.index - 1) + 1;
         const line = content.slice(0, match.index).split('\n').length;
-        const snippet = lines[line - 1]?.trim().slice(0, 120) ?? '';
+        const lineText = lines[line - 1] ?? '';
+        const col = match.index - lineStart;
+        // Window centered on the match, not just the line's first 120 chars
+        // -- a match far past column 120 on a long (often minified) line
+        // was previously invisible in the preview even though the finding
+        // itself (file/line/pattern) was already correct.
+        const windowStart = Math.max(0, col - 40);
+        const windowEnd = Math.min(lineText.length, col + match[0].length + 80);
+        const snippet = lineText.slice(windowStart, windowEnd).trim();
         findings.push({
           severity: pattern.severity,
           pattern: pattern.label,
