@@ -131,16 +131,29 @@ export function auditExtension(dir, manifest, summary) {
   };
 }
 
+const OFFICIAL_UPDATE_URL_HOSTS = new Set([
+  'clients2.google.com',
+  'edge.microsoft.com',
+]);
+
 function manifestFlags(summary) {
   const flags = [];
   if (!summary) return flags;
 
   if (summary.updateUrl) {
-    flags.push({
-      severity: 'high',
-      label: 'custom update_url (bypasses store-managed updates)',
-      detail: summary.updateUrl,
-    });
+    let host = null;
+    try {
+      host = new URL(summary.updateUrl).hostname;
+    } catch {
+      // not a parseable URL; treat as non-official below
+    }
+    if (!host || !OFFICIAL_UPDATE_URL_HOSTS.has(host)) {
+      flags.push({
+        severity: 'high',
+        label: 'custom update_url (bypasses store-managed updates)',
+        detail: summary.updateUrl,
+      });
+    }
   }
   if (summary.contentSecurityPolicy) {
     const csp = JSON.stringify(summary.contentSecurityPolicy);

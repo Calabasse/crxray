@@ -99,6 +99,22 @@ test('auditExtension scores optional_host_permissions and flags a custom update_
   rmSync(dir, { recursive: true });
 });
 
+test('auditExtension does not flag the official Chrome Web Store update_url', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = {
+    name: 'Store Ext', version: '1.0.0', manifest_version: 3,
+    permissions: ['storage'],
+    update_url: 'https://clients2.google.com/service/update2/crx',
+    background: { service_worker: 'bg.js' },
+  };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, { manifest, files: { 'bg.js': 'console.log("ok");' } });
+
+  const audit = auditExtension(dir, manifest, summary);
+  assert.ok(!audit.flags.some((f) => f.label.includes('update_url')));
+  rmSync(dir, { recursive: true });
+});
+
 test('scanSource flags fetch, WebSocket, sendMessage, and executeScript', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
   const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
