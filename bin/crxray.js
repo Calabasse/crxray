@@ -32,6 +32,22 @@ Download options:
       --map             Entry-point map and readability stats only
       --deobfuscate     Deobfuscate all JS (webcrack: obfuscator.io, webpack, etc.)
       --unpack-with-wakaru  Structurally unpack bundles with wakaru (npx), independent of --deobfuscate
+      --humanify        Rename minified identifiers via humanify (a standalone
+                        binary you must install yourself -- see
+                        github.com/jehna/humanify/releases -- not npx-able).
+                        Best after --deobfuscate/--unpack-with-wakaru.
+      --humanify-provider <name>  ollama (default, local/free) | openai |
+                        gemini | anthropic | openrouter | requesty
+      --humanify-model <name>    Explicit model for --humanify-provider.
+                        Strongly recommended for ollama: an 8B-class local
+                        model gives usable names, a ~1.5B model does not.
+      --rebuild         Reassemble a clean, loadable copy into
+                        <outdir>-rebuilt/ (manifest + every referenced file).
+                        A bundle a prior --deobfuscate/--unpack-with-wakaru
+                        pass split into modules ships as-is alongside its
+                        readable decomposition, not spliced back together --
+                        see the "rebuild/duplicate gap" plan for why. Runs
+                        after --deobfuscate/--unpack-with-wakaru/--humanify.
       --beautify        Beautify all JS files
       --no-maps         Delete .map source maps (on by default with --audit)
       --keep-maps       Keep source maps even when using --audit
@@ -75,6 +91,10 @@ try {
       map: { type: 'boolean' },
       deobfuscate: { type: 'boolean' },
       'unpack-with-wakaru': { type: 'boolean' },
+      humanify: { type: 'boolean' },
+      'humanify-provider': { type: 'string' },
+      'humanify-model': { type: 'string' },
+      rebuild: { type: 'boolean' },
       beautify: { type: 'boolean' },
       'no-maps': { type: 'boolean' },
       'keep-maps': { type: 'boolean' },
@@ -136,6 +156,10 @@ async function runDownload(input, values) {
     map: values.map,
     deobfuscate: values.deobfuscate,
     unpackWithWakaru: values['unpack-with-wakaru'],
+    humanify: values.humanify,
+    humanifyProvider: values['humanify-provider'],
+    humanifyModel: values['humanify-model'],
+    rebuild: values.rebuild,
     beautify: values.beautify,
     quiet: values.quiet,
     ...mapOpts(values),
@@ -187,6 +211,21 @@ async function runDownload(input, values) {
       `Unpacked ${result.wakaru.unpacked} bundle(s) with wakaru (${result.wakaru.errors.length} failed)`
     );
   }
+  if (result.humanify && !values.quiet) {
+    console.log('');
+    console.log(
+      `Renamed identifiers in ${result.humanify.renamed} file(s) with humanify (${result.humanify.errors.length} failed)`
+    );
+  }
+  if (result.rebuild && !values.quiet) {
+    console.log('');
+    const rel = path.relative(process.cwd(), result.rebuild.outDir) || result.rebuild.outDir;
+    console.log(
+      `Rebuilt ${result.rebuild.copied} file(s) to ${rel}/` +
+        (result.rebuild.missing.length ? ` (${result.rebuild.missing.length} referenced file(s) missing: ${result.rebuild.missing.join(', ')})` : '') +
+        (result.rebuild.referenceOnly.length ? ` (${result.rebuild.referenceOnly.length} bundle(s) shipped as-is with readable reference material alongside)` : '')
+    );
+  }
   if (result.beautify && !values.quiet) {
     console.log(`Beautified ${result.beautify.changed} files`);
   }
@@ -201,6 +240,10 @@ async function runAudit(args, values) {
     map: true,
     deobfuscate: values.deobfuscate,
     unpackWithWakaru: values['unpack-with-wakaru'],
+    humanify: values.humanify,
+    humanifyProvider: values['humanify-provider'],
+    humanifyModel: values['humanify-model'],
+    rebuild: values.rebuild,
     beautify: values.beautify,
     quiet: values.quiet,
     ...mapOpts({ ...values, audit: true }),

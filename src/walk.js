@@ -81,3 +81,16 @@ export function isWakaruOutput(file) {
   const siblingJs = path.join(path.dirname(parentDir), `${parentName.slice(0, -'.wakaru'.length)}.js`);
   return existsSync(siblingJs);
 }
+
+/**
+ * True when `file` is renameWithHumanify's own output for another file --
+ * its name ends in `.humanify.js` AND the original it renamed
+ * (`<name>.js`, same directory) still exists. audit/map treat this output
+ * as read-only reference material and never scan it, the same role
+ * isWakaruOutput plays for wakaru's module directories.
+ */
+export function isHumanifyOutput(file) {
+  if (!file.endsWith('.humanify.js')) return false;
+  const original = file.slice(0, -'.humanify.js'.length) + '.js';
+  return existsSync(original);
+}

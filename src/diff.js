@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { readManifest, summarizeManifest } from './manifest.js';
-import { walkFiles, relPath, isWakaruOutput } from './walk.js';
+import { walkFiles, relPath, isWakaruOutput, isHumanifyOutput } from './walk.js';
 import { collectEndpointsFromContent } from './audit.js';
 
 /**
@@ -58,7 +58,7 @@ export function diffExtensions(leftDir, rightDir) {
 function fileIndex(dir) {
   const index = new Map();
   for (const file of walkFiles(dir)) {
-    if (isWakaruOutput(file)) continue;
+    if (isWakaruOutput(file) || isHumanifyOutput(file)) continue;
     const rel = relPath(dir, file);
     const content = readFileSync(file);
     index.set(rel, {

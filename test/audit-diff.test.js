@@ -693,6 +693,43 @@ test('buildEntryPointMap still counts a shipped <name>.wakaru lookalike with no 
   rmSync(dir, { recursive: true });
 });
 
+test('auditExtension never scans a file that is humanify\'s own output for another file', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  writeFileSync(path.join(dir, 'min.js'), 'minified');
+  writeFileSync(path.join(dir, 'min.humanify.js'), 'eval("danger"); fetch("https://evil.example.com");');
+  writeFileSync(path.join(dir, 'clean.js'), 'console.log("fine");');
+
+  const audit = auditExtension(dir, null, null);
+  assert.equal(audit.findings.length, 0);
+  assert.equal(audit.endpoints.length, 0);
+  rmSync(dir, { recursive: true });
+});
+
+test('auditExtension still scans a *.humanify.js file with no sibling <name>.js (not provably our output)', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  writeFileSync(path.join(dir, 'evil.humanify.js'), 'eval("danger"); fetch("https://evil.example.com");');
+
+  const audit = auditExtension(dir, null, null);
+  assert.equal(audit.findings.length, 2);
+  assert.equal(audit.endpoints.length, 1);
+  rmSync(dir, { recursive: true });
+});
+
+test('buildEntryPointMap readability stats ignore a file that is humanify\'s own output for another file', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-map-'));
+  writeFileSync(path.join(dir, 'min.js'), 'x'.repeat(2000));
+  writeFileSync(path.join(dir, 'min.humanify.js'), 'x'.repeat(2000));
+  writeFileSync(path.join(dir, 'clean.js'), 'console.log("fine");\n');
+
+  const map = buildEntryPointMap(dir, null);
+  assert.equal(map.readability.total, 2);
+  assert.deepEqual(
+    map.readability.files.map((f) => f.file).sort(),
+    ['clean.js', 'min.js']
+  );
+  rmSync(dir, { recursive: true });
+});
+
 test('diffExtensions never reports files inside a <name>.wakaru directory as added/removed/modified', () => {
   const left = mkdtempSync(path.join(tmpdir(), 'crxray-left-'));
   const right = mkdtempSync(path.join(tmpdir(), 'crxray-right-'));
@@ -710,6 +747,28 @@ test('diffExtensions never reports files inside a <name>.wakaru directory as add
   assert.deepEqual(diff.files.added, []);
   assert.deepEqual(diff.files.removed, []);
   assert.deepEqual(diff.files.modified.map((f) => f.path), ['bundle.js']);
+
+  rmSync(left, { recursive: true });
+  rmSync(right, { recursive: true });
+});
+
+test('diffExtensions never reports a *.humanify.js file (with a sibling original) as added/removed/modified', () => {
+  const left = mkdtempSync(path.join(tmpdir(), 'crxray-left-'));
+  const right = mkdtempSync(path.join(tmpdir(), 'crxray-right-'));
+
+  makeExtension(left, {
+    manifest: { name: 'Ext', version: '1.0.0', manifest_version: 3 },
+    files: { 'min.js': 'left', 'min.humanify.js': 'left renamed' },
+  });
+  makeExtension(right, {
+    manifest: { name: 'Ext', version: '1.0.0', manifest_version: 3 },
+    files: { 'min.js': 'right', 'min.humanify.js': 'right renamed' },
+  });
+
+  const diff = diffExtensions(left, right);
+  assert.deepEqual(diff.files.added, []);
+  assert.deepEqual(diff.files.removed, []);
+  assert.deepEqual(diff.files.modified.map((f) => f.path), ['min.js']);
 
   rmSync(left, { recursive: true });
   rmSync(right, { recursive: true });

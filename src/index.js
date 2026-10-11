@@ -10,6 +10,8 @@ import { buildEntryPointMap } from './map.js';
 import { beautifyDirectory } from './beautify.js';
 import { deobfuscateDirectory } from './deobfuscate.js';
 import { unpackWithWakaru } from './wakaru.js';
+import { renameWithHumanify } from './humanify.js';
+import { rebuildExtension } from './rebuild.js';
 import { diffExtensions } from './diff.js';
 import { isDirectory } from './walk.js';
 import { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
@@ -24,6 +26,8 @@ export { buildEntryPointMap } from './map.js';
 export { beautifyDirectory } from './beautify.js';
 export { deobfuscateDirectory } from './deobfuscate.js';
 export { unpackWithWakaru } from './wakaru.js';
+export { renameWithHumanify } from './humanify.js';
+export { rebuildExtension } from './rebuild.js';
 export { diffExtensions, formatDiffReport } from './diff.js';
 export { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
 
@@ -41,6 +45,10 @@ export { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
  * @param {boolean} [opts.map] - include entry-point map (always included with audit)
  * @param {boolean} [opts.deobfuscate] - deobfuscate all JS via webcrack
  * @param {boolean} [opts.unpackWithWakaru] - structurally unpack bundles via `npx wakaru`, independent of --deobfuscate
+ * @param {boolean} [opts.humanify] - rename minified identifiers via humanify (a standalone binary, not npx-able); independent of --deobfuscate/--unpack-with-wakaru but most useful after them
+ * @param {string} [opts.humanifyProvider] - humanify provider: 'ollama' (default, local/free) | 'openai' | 'gemini' | 'anthropic' | 'openrouter' | 'requesty'
+ * @param {string} [opts.humanifyModel] - explicit model name passed to humanify's -m; strongly recommended for 'ollama' (see src/humanify.js doc comment on model-quality variance)
+ * @param {boolean} [opts.rebuild] - reassemble a clean, loadable copy into `<outDir>-rebuilt/`; runs after wakaru/deobfuscate/humanify so it sees their output
  * @param {boolean} [opts.beautify] - beautify all JS via js-beautify
  * @param {boolean} [opts.quiet] - suppress post-process logs
  * @returns {Promise<object>}
@@ -142,8 +150,26 @@ async function runPostProcess(outDir, manifest, summary, opts, { crx, id } = {})
     result.deobfuscate = await deobfuscateDirectory(outDir, { quiet: opts.quiet });
   }
 
+  // humanify runs after wakaru/deobfuscate, unlike those two (which are
+  // independent of each other by design -- see wakaru.js's own doc comment):
+  // it looks for the `.wakaru`/`.unpacked` siblings those steps produce to
+  // decide what to rename, so it only sees them if it runs last.
+  if (opts.humanify) {
+    result.humanify = await renameWithHumanify(outDir, {
+      quiet: opts.quiet,
+      provider: opts.humanifyProvider,
+      model: opts.humanifyModel,
+    });
+  }
+
   if (opts.beautify) {
     result.beautify = beautifyDirectory(outDir, { quiet: opts.quiet });
+  }
+
+  if (opts.rebuild) {
+    const rebuildOutDir = path.join(path.dirname(outDir), `${path.basename(outDir)}-rebuilt`);
+    result.rebuild = rebuildExtension(outDir, rebuildOutDir, manifest, { quiet: opts.quiet });
+    result.rebuild.outDir = rebuildOutDir;
   }
 
   if (opts.map || opts.audit) {

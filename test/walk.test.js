@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { walkFiles, isSupersededByUnpack, isWakaruOutput } from '../src/walk.js';
+import { walkFiles, isSupersededByUnpack, isWakaruOutput, isHumanifyOutput } from '../src/walk.js';
 
 test('walkFiles finds files recursively, filtered by extension', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-walk-'));
@@ -90,4 +90,22 @@ test('isWakaruOutput only checks the immediate parent directory, not every ances
 
   assert.equal(isWakaruOutput(path.join(extracted, 'clean.js')), false);
   rmSync(root, { recursive: true });
+});
+
+test('isHumanifyOutput is true for a *.humanify.js file with a sibling <name>.js', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-walk-'));
+  writeFileSync(path.join(dir, 'min.js'), 'minified');
+  writeFileSync(path.join(dir, 'min.humanify.js'), 'renamed');
+
+  assert.equal(isHumanifyOutput(path.join(dir, 'min.humanify.js')), true);
+  assert.equal(isHumanifyOutput(path.join(dir, 'min.js')), false);
+  rmSync(dir, { recursive: true });
+});
+
+test('isHumanifyOutput is false for a *.humanify.js file with no sibling <name>.js (not provably our output)', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-walk-'));
+  writeFileSync(path.join(dir, 'evil.humanify.js'), 'eval("danger")');
+
+  assert.equal(isHumanifyOutput(path.join(dir, 'evil.humanify.js')), false);
+  rmSync(dir, { recursive: true });
 });
