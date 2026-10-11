@@ -234,6 +234,189 @@ const URL_RE = /https?:\/\/[^\s"'`)]+/g;
 
 const EXCLUDED_HOST_SUFFIXES = ['mozilla.org', 'w3.org'];
 
+// R1: message-passing map. Static, regex-based (matches this file's existing style, no AST
+// dependency). A discriminant is a literal value chrome.runtime messaging code commonly
+// branches on (type/action/cmd/command), found within a bounded window of a call site --
+// same proximity-window technique already used above for entropy/decode-call pairing. Two
+// sides sharing a discriminant that's unique across the whole scan are an 'exact' match;
+// sharing one that's not unique (multiple senders/listeners claim it) is 'probable'; no
+// inferable discriminant on either side is 'ambiguous' and never forced into a pair --
+// chrome.runtime.sendMessage/onMessage has no general, statically-provable 1:1 contract.
+const SEND_MESSAGE_CALL_RE = /\b(?:chrome|browser)\.runtime\.(sendMessage|connect)\s*\(/g;
+const ADD_LISTENER_RE = /\b(?:chrome|browser)\.runtime\.(onMessage|onConnect)\.addListener\s*\(/g;
+const MESSAGE_DISCRIMINANT_RE =
+  /\b(?:type|action|cmd|command)\s*:\s*['"`]([\w.-]+)['"`]|\b(?:type|action|cmd|command)\s*===?\s*['"`]([\w.-]+)['"`]|['"`]([\w.-]+)['"`]\s*===?\s*\w+(?:\.\w+)?\.(?:type|action|cmd|command)\b/g;
+const MESSAGE_DISCRIMINANT_PROXIMITY_CHARS = 150;
+
+function extractDiscriminants(content, index) {
+  const start = Math.max(0, index - MESSAGE_DISCRIMINANT_PROXIMITY_CHARS);
+  const end = Math.min(content.length, index + MESSAGE_DISCRIMINANT_PROXIMITY_CHARS);
+  const window = content.slice(start, end);
+  const found = new Set();
+  MESSAGE_DISCRIMINANT_RE.lastIndex = 0;
+  let m;
+  while ((m = MESSAGE_DISCRIMINANT_RE.exec(window)) !== null) {
+    const value = m[1] ?? m[2] ?? m[3];
+    if (value) found.add(value);
+  }
+  return [...found];
+}
+
+function lineOf(content, index) {
+  return content.slice(0, index).split('\n').length;
+}
+
+function countByDiscriminant(entries) {
+  const counts = new Map();
+  for (const entry of entries) {
+    for (const d of entry.discriminants) counts.set(d, (counts.get(d) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * Message-passing map: sender (sendMessage/connect) call sites grouped against listener
+ * (onMessage/onConnect) addListener call sites by inferable discriminant. No forced 1:1
+ * pairing -- see module comment above.
+ */
+export function collectMessagePassing(dir) {
+  const senders = [];
+  const listeners = [];
+  const jsFiles = walkFiles(dir, { extensions: ['.js'] });
+
+  for (const file of jsFiles) {
+    if (isSupersededByUnpack(file) || isWakaruOutput(file) || isHumanifyOutput(file)) continue;
+    const rel = relPath(dir, file);
+    const content = readFileSync(file, 'utf8');
+
+    SEND_MESSAGE_CALL_RE.lastIndex = 0;
+    let m;
+    while ((m = SEND_MESSAGE_CALL_RE.exec(content)) !== null) {
+      senders.push({ file: rel, line: lineOf(content, m.index), kind: m[1], discriminants: extractDiscriminants(content, m.index) });
+    }
+
+    ADD_LISTENER_RE.lastIndex = 0;
+    while ((m = ADD_LISTENER_RE.exec(content)) !== null) {
+      listeners.push({ file: rel, line: lineOf(content, m.index), kind: m[1], discriminants: extractDiscriminants(content, m.index) });
+    }
+  }
+
+  const senderCounts = countByDiscriminant(senders);
+  const listenerCounts = countByDiscriminant(listeners);
+  const candidates = [];
+  const matchedSenders = new Set();
+  const matchedListeners = new Set();
+
+  senders.forEach((sender, si) => {
+    listeners.forEach((listener, li) => {
+      const shared = sender.discriminants.filter((d) => listener.discriminants.includes(d));
+      if (shared.length === 0) return;
+      const unique = shared.every((d) => senderCounts.get(d) === 1 && listenerCounts.get(d) === 1);
+      candidates.push({
+        sender: { file: sender.file, line: sender.line, kind: sender.kind },
+        listener: { file: listener.file, line: listener.line, kind: listener.kind },
+        discriminants: shared,
+        confidence: unique ? 'exact' : 'probable',
+      });
+      matchedSenders.add(si);
+      matchedListeners.add(li);
+    });
+  });
+
+  senders.forEach((sender, si) => {
+    if (matchedSenders.has(si)) return;
+    candidates.push({
+      sender: { file: sender.file, line: sender.line, kind: sender.kind },
+      listener: null,
+      discriminants: sender.discriminants,
+      confidence: 'ambiguous',
+    });
+  });
+  listeners.forEach((listener, li) => {
+    if (matchedListeners.has(li)) return;
+    candidates.push({
+      sender: null,
+      listener: { file: listener.file, line: listener.line, kind: listener.kind },
+      discriminants: listener.discriminants,
+      confidence: 'ambiguous',
+    });
+  });
+
+  return candidates;
+}
+
+// R2: endpoint method/shape capture, alongside the existing bare-URL extraction (unchanged,
+// below). `fetch(url, {...})`'s options object can nest further objects (headers), so a
+// non-greedy `{...}` regex would stop at the first inner `}` -- captureBalanced does real
+// brace counting instead.
+const FETCH_CALL_START_RE = /\bfetch\s*\(\s*(['"`])([^'"`]+)\1\s*(,)?/g;
+const HTTP_METHOD_RE = /\bmethod\s*:\s*['"`](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)['"`]/i;
+
+function captureBalanced(content, openIndex) {
+  let depth = 0;
+  for (let i = openIndex; i < content.length; i++) {
+    if (content[i] === '{') depth++;
+    else if (content[i] === '}') {
+      depth--;
+      if (depth === 0) return content.slice(openIndex, i + 1);
+    }
+  }
+  return null;
+}
+
+function extractHeaderKeys(optionsObj) {
+  const headersIdx = optionsObj.search(/\bheaders\s*:\s*\{/);
+  if (headersIdx === -1) return [];
+  const braceIdx = optionsObj.indexOf('{', headersIdx);
+  const headersObj = captureBalanced(optionsObj, braceIdx);
+  if (!headersObj) return [];
+  const keys = [];
+  const keyRe = /['"`]?([A-Za-z0-9-]+)['"`]?\s*:/g;
+  let km;
+  while ((km = keyRe.exec(headersObj.slice(1, -1))) !== null) keys.push(km[1]);
+  return keys;
+}
+
+/**
+ * Literal-shape fetch() call details: method and header keys, where statically inferable.
+ * Supplements collectEndpointsFromContent's bare URL list below -- does not replace it.
+ */
+export function collectEndpointDetailsFromContent(content) {
+  const details = [];
+  FETCH_CALL_START_RE.lastIndex = 0;
+  let m;
+  while ((m = FETCH_CALL_START_RE.exec(content)) !== null) {
+    const url = m[2];
+    let method = null;
+    let headersKeys = [];
+    if (m[3] === ',') {
+      let idx = m.index + m[0].length;
+      while (idx < content.length && /\s/.test(content[idx])) idx++;
+      if (content[idx] === '{') {
+        const optionsObj = captureBalanced(content, idx);
+        if (optionsObj) {
+          const methodMatch = optionsObj.match(HTTP_METHOD_RE);
+          if (methodMatch) method = methodMatch[1].toUpperCase();
+          headersKeys = extractHeaderKeys(optionsObj);
+        }
+      }
+    }
+    details.push({ url, method, headersKeys });
+  }
+  return details;
+}
+
+function collectEndpointDetails(dir) {
+  const details = [];
+  const jsFiles = walkFiles(dir, { extensions: ['.js'] });
+  for (const file of jsFiles) {
+    if (isSupersededByUnpack(file) || isWakaruOutput(file) || isHumanifyOutput(file)) continue;
+    const content = readFileSync(file, 'utf8');
+    details.push(...collectEndpointDetailsFromContent(content));
+  }
+  return details;
+}
+
 export function collectEndpointsFromContent(content) {
   const endpoints = [];
   for (const url of content.match(URL_RE) ?? []) {
@@ -258,6 +441,8 @@ export function auditExtension(dir, manifest, summary) {
   const permissions = classifyPermissions(summary);
   const findings = scanSource(dir);
   const endpoints = collectEndpoints(dir);
+  const endpointDetails = collectEndpointDetails(dir);
+  const messagePassing = collectMessagePassing(dir);
   const flags = manifestFlags(summary);
   const correlations = correlatePermissionsAndFindings(permissions, findings);
   const risk = computeRisk(permissions, findings, summary, flags, correlations);
@@ -267,6 +452,8 @@ export function auditExtension(dir, manifest, summary) {
     permissions,
     findings,
     endpoints,
+    endpointDetails,
+    messagePassing,
     flags,
     correlations,
     entryPoints: map.entryPoints,
