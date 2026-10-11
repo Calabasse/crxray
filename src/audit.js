@@ -504,7 +504,7 @@ export function formatAuditReport(audit) {
 
   if (audit.signature) {
     lines.push(
-      `Signature: ${audit.signature.verified ? '✅ verified store-signed CRX3' : `⚠️ unverifiable (${audit.signature.reason})`}`
+      `Signature: ${audit.signature.verified ? `✅ verified store-signed CRX${audit.signature.version}` : `⚠️ unverifiable (${audit.signature.reason})`}`
     );
     lines.push('');
   }

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { rebuildExtension } from '../src/rebuild.js';
+import { rebuildExtension, writeProvenance } from '../src/rebuild.js';
+import { createHash } from 'node:crypto';
 
 function makeDir() {
   return mkdtempSync(path.join(tmpdir(), 'crxray-rebuild-'));
@@ -303,5 +304,37 @@ test('rebuildExtension does not double-count the same referenced path twice (e.g
   const results = rebuildExtension(dir, outDir, manifest, { quiet: true });
 
   assert.equal(results.copied, 2); // manifest.json + shared.js, once each
+  rmSync(dir, { recursive: true });
+});
+
+test('writeProvenance writes a REBUILD-PROVENANCE.json recording the crx hash, signature result, and crxray version', () => {
+  const dir = makeDir();
+  const crx = Buffer.from('fake crx bytes for this test');
+  const signature = { verified: true, extensionId: 'a'.repeat(32), reason: null, version: 3 };
+
+  const provenance = writeProvenance(dir, {
+    extensionId: 'a'.repeat(32), version: '1.2.3', store: 'chrome', crx, signature, crxrayVersion: '0.2.12',
+  });
+
+  const onDisk = JSON.parse(readFileSync(path.join(dir, 'REBUILD-PROVENANCE.json'), 'utf8'));
+  assert.deepEqual(onDisk, provenance);
+  assert.equal(onDisk.extensionId, 'a'.repeat(32));
+  assert.equal(onDisk.version, '1.2.3');
+  assert.equal(onDisk.store, 'chrome');
+  assert.equal(onDisk.originalCrxSha256, createHash('sha256').update(crx).digest('hex'));
+  assert.deepEqual(onDisk.signature, signature);
+  assert.equal(onDisk.crxrayVersion, '0.2.12');
+  assert.match(onDisk.generatedAt, /^\d{4}-\d{2}-\d{2}T/);
+  rmSync(dir, { recursive: true });
+});
+
+test('writeProvenance records a null signature/hash honestly rather than fabricating one when no crx bytes are available', () => {
+  // e.g. --rebuild run against an already-unpacked directory (crxray audit
+  // <dir> --rebuild) with no original .crx in memory for this run.
+  const dir = makeDir();
+  const provenance = writeProvenance(dir, { extensionId: 'a'.repeat(32), version: null, store: null, crx: null, signature: null, crxrayVersion: '0.2.12' });
+
+  assert.equal(provenance.originalCrxSha256, null);
+  assert.equal(provenance.signature, null);
   rmSync(dir, { recursive: true });
 });

@@ -123,6 +123,74 @@ export function verifyCrx3Signature(buf, expectedId) {
   };
 }
 
+/**
+ * Parse a CRX2 file's signature block and verify its single RSA proof.
+ * Returns { verified, extensionId, reason }.
+ *
+ * Per the authoritative Chromium CRX2 format doc (confirmed 2026-10-11,
+ * chromium.googlesource.com .../docs/templates/articles/crx.html): the
+ * signature is RSA-SHA1 over the raw ZIP bytes directly -- no CRX3-style
+ * "SignedData" wrapping prefix -- and the public key is an X509
+ * SubjectPublicKeyInfo DER block, the same format CRX3 uses. CRX2 carries
+ * exactly one key/signature pair (not CRX3's repeated proof list), so
+ * there is nothing to iterate over.
+ *
+ * No real CRX2 sample was available to confirm this against (Chrome has
+ * required CRX3 since Chrome 70, Oct 2018); this is checked against a
+ * self-signed synthetic fixture built from the same spec instead -- lower
+ * confidence than verifyCrx3Signature's live-extension confirmation.
+ */
+export function verifyCrx2Signature(buf, expectedId) {
+  if (buf.length < 16 || buf.toString('latin1', 0, 4) !== MAGIC || buf.readUInt32LE(4) !== 2) {
+    return { verified: false, extensionId: null, reason: 'not a CRX2 file' };
+  }
+
+  const keyLen = buf.readUInt32LE(8);
+  const sigLen = buf.readUInt32LE(12);
+  const zipStart = 16 + keyLen + sigLen;
+  if (zipStart > buf.length) {
+    return { verified: false, extensionId: null, reason: 'corrupt CRX2: header extends past end of file' };
+  }
+
+  const publicKeyDer = buf.subarray(16, 16 + keyLen);
+  const signature = buf.subarray(16 + keyLen, zipStart);
+  const zip = buf.subarray(zipStart);
+
+  let extensionId = null;
+  try {
+    extensionId = bytesToExtensionId(createHash('sha256').update(publicKeyDer).digest().subarray(0, 16));
+    const verifier = createVerify('RSA-SHA1');
+    verifier.update(zip);
+    const sigOk = verifier.verify({ key: publicKeyDer, format: 'der', type: 'spki' }, signature);
+
+    if (sigOk && extensionId === expectedId) {
+      return { verified: true, extensionId, reason: null };
+    }
+  } catch {
+    return { verified: false, extensionId, reason: 'malformed or unsupported public key / signature' };
+  }
+
+  return { verified: false, extensionId, reason: 'signature or ID mismatch' };
+}
+
+/**
+ * Verify a CRX's embedded signature regardless of container version.
+ * Dispatches on the version field in the header (CRX2 -> SHA1-RSA over the
+ * raw ZIP, CRX3 -> SHA256-RSA over the wrapped SignedData construction --
+ * see each function's own doc comment) and tags the result with which one
+ * ran, so a caller/report can say which scheme it actually checked rather
+ * than assuming CRX3. Anything that isn't recognizably CRX2 is handed to
+ * the CRX3 path, which already reports 'not a CRX3 file' for anything
+ * further malformed -- this preserves the exact behavior every existing
+ * caller already depends on for non-CRX2 input.
+ */
+export function verifyCrxSignature(buf, expectedId) {
+  if (buf.length >= 8 && buf.toString('latin1', 0, 4) === MAGIC && buf.readUInt32LE(4) === 2) {
+    return { ...verifyCrx2Signature(buf, expectedId), version: 2 };
+  }
+  return { ...verifyCrx3Signature(buf, expectedId), version: 3 };
+}
+
 function bytesToExtensionId(bytes) {
   let id = '';
   for (const byte of bytes) {

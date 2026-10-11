@@ -801,6 +801,19 @@ test('auditExtension correlates a declared permission with a matching API call a
   rmSync(dir, { recursive: true });
 });
 
+test('formatAuditReport names the actual CRX version a verified signature checked, not a hardcoded CRX3', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  makeExtension(dir, { manifest: { name: 'Ext', version: '1.0.0', manifest_version: 3 }, files: {} });
+  const audit = auditExtension(dir, null, null);
+
+  audit.signature = { verified: true, extensionId: 'a'.repeat(32), reason: null, version: 2 };
+  assert.match(formatAuditReport(audit), /verified store-signed CRX2/);
+
+  audit.signature = { verified: true, extensionId: 'a'.repeat(32), reason: null, version: 3 };
+  assert.match(formatAuditReport(audit), /verified store-signed CRX3/);
+  rmSync(dir, { recursive: true });
+});
+
 test('auditExtension does not correlate a permission with no matching call anywhere', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
   const manifest = {

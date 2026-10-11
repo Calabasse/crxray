@@ -1,8 +1,9 @@
-import { writeFileSync, rmSync, existsSync, renameSync } from 'node:fs';
+import { writeFileSync, readFileSync, rmSync, existsSync, renameSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseExtensionRef } from './parse.js';
 import { downloadCrx } from './download.js';
-import { crxToZip, verifyCrx3Signature } from './crx.js';
+import { crxToZip, verifyCrxSignature } from './crx.js';
 import { extractZip } from './zip.js';
 import { readManifest, summarizeManifest } from './manifest.js';
 import { auditExtension } from './audit.js';
@@ -11,14 +12,14 @@ import { beautifyDirectory } from './beautify.js';
 import { deobfuscateDirectory } from './deobfuscate.js';
 import { unpackWithWakaru } from './wakaru.js';
 import { renameWithHumanify } from './humanify.js';
-import { rebuildExtension } from './rebuild.js';
+import { rebuildExtension, writeProvenance } from './rebuild.js';
 import { diffExtensions } from './diff.js';
 import { isDirectory } from './walk.js';
 import { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
 
 export { parseExtensionRef } from './parse.js';
 export { downloadCrx, crxUrl } from './download.js';
-export { crxToZip, verifyCrx3Signature } from './crx.js';
+export { crxToZip, verifyCrx2Signature, verifyCrx3Signature, verifyCrxSignature } from './crx.js';
 export { extractZip, readZipEntries } from './zip.js';
 export { readManifest, summarizeManifest } from './manifest.js';
 export { auditExtension, formatAuditReport } from './audit.js';
@@ -27,9 +28,13 @@ export { beautifyDirectory } from './beautify.js';
 export { deobfuscateDirectory } from './deobfuscate.js';
 export { unpackWithWakaru } from './wakaru.js';
 export { renameWithHumanify } from './humanify.js';
-export { rebuildExtension } from './rebuild.js';
+export { rebuildExtension, writeProvenance } from './rebuild.js';
 export { diffExtensions, formatDiffReport } from './diff.js';
 export { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
+
+const CRXRAY_VERSION = JSON.parse(
+  readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')
+).version;
 
 /**
  * Download and unpack an extension.
@@ -88,7 +93,7 @@ export async function crxray(input, opts = {}) {
     mapsRemoved = removeSourceMaps(outDir);
   }
 
-  const postProcess = await runPostProcess(outDir, manifest, summary, opts, { crx, id });
+  const postProcess = await runPostProcess(outDir, manifest, summary, opts, { crx, id, store });
 
   return {
     id,
@@ -139,7 +144,7 @@ async function resolveDiffTarget(input, opts) {
   return result.outDir;
 }
 
-async function runPostProcess(outDir, manifest, summary, opts, { crx, id } = {}) {
+async function runPostProcess(outDir, manifest, summary, opts, { crx, id, store } = {}) {
   const result = {};
 
   if (opts.unpackWithWakaru) {
@@ -170,6 +175,20 @@ async function runPostProcess(outDir, manifest, summary, opts, { crx, id } = {})
     const rebuildOutDir = path.join(path.dirname(outDir), `${path.basename(outDir)}-rebuilt`);
     result.rebuild = rebuildExtension(outDir, rebuildOutDir, manifest, { quiet: opts.quiet });
     result.rebuild.outDir = rebuildOutDir;
+    // Reuses the crx bytes already in memory from this same run (when a
+    // fresh download preceded this, i.e. via crxray() not processExtension())
+    // -- no new network call, no new trust assumption, see writeProvenance's
+    // own doc comment. Independent of opts.audit: provenance shouldn't
+    // silently depend on whether --audit was also passed.
+    const signature = crx && id ? verifyCrxSignature(crx, id) : null;
+    result.rebuild.provenance = writeProvenance(rebuildOutDir, {
+      extensionId: id ?? null,
+      version: manifest?.version ?? null,
+      store: store ?? null,
+      crx: crx ?? null,
+      signature,
+      crxrayVersion: CRXRAY_VERSION,
+    });
   }
 
   if (opts.map || opts.audit) {
@@ -179,7 +198,7 @@ async function runPostProcess(outDir, manifest, summary, opts, { crx, id } = {})
   if (opts.audit) {
     result.audit = auditExtension(outDir, manifest, summary);
     if (crx && id) {
-      result.audit.signature = verifyCrx3Signature(crx, id);
+      result.audit.signature = verifyCrxSignature(crx, id);
     }
     writeFileSync(path.join(outDir, '.crxray-audit.json'), JSON.stringify(result.audit, null, 2));
   }

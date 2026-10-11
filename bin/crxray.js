@@ -48,6 +48,11 @@ Download options:
                         readable decomposition, not spliced back together --
                         see the "rebuild/duplicate gap" plan for why. Runs
                         after --deobfuscate/--unpack-with-wakaru/--humanify.
+                        Also writes REBUILD-PROVENANCE.json into the output
+                        (original extension ID/version, the original CRX's
+                        sha256, and its CRX2/CRX3 signature verification
+                        result) so a rebuilt copy's chain of custody back to
+                        the verified download is on record.
       --beautify        Beautify all JS files
       --no-maps         Delete .map source maps (on by default with --audit)
       --keep-maps       Keep source maps even when using --audit
@@ -225,6 +230,10 @@ async function runDownload(input, values) {
         (result.rebuild.missing.length ? ` (${result.rebuild.missing.length} referenced file(s) missing: ${result.rebuild.missing.join(', ')})` : '') +
         (result.rebuild.referenceOnly.length ? ` (${result.rebuild.referenceOnly.length} bundle(s) shipped as-is with readable reference material alongside)` : '')
     );
+    const sig = result.rebuild.provenance?.signature;
+    if (sig) {
+      console.log(`Provenance: ${sig.verified ? `✅ verified store-signed CRX${sig.version}` : `⚠️ unverifiable (${sig.reason})`} (REBUILD-PROVENANCE.json)`);
+    }
   }
   if (result.beautify && !values.quiet) {
     console.log(`Beautified ${result.beautify.changed} files`);

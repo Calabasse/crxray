@@ -1,4 +1,5 @@
-import { mkdirSync, cpSync, existsSync } from 'node:fs';
+import { mkdirSync, cpSync, existsSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { isDirectory, relPath, walkFiles, isWakaruOutput, isHumanifyOutput } from './walk.js';
 
@@ -87,6 +88,31 @@ function copyReferencedFile(dir, outDir, rel, results) {
     copyInto(srcPath, path.join(outDir, rel));
   }
   results.copied++;
+}
+
+/**
+ * Write REBUILD-PROVENANCE.json into a rebuilt directory: a chain-of-custody
+ * record tying the rebuild back to the original download it was derived
+ * from. Every field comes from values the caller already computed earlier
+ * in the same run (the crx buffer already in memory, the signature check
+ * already run) -- no new network call and no new trust assumption is
+ * introduced by this step, it only serializes what's already known. A field
+ * with nothing to report (no crx bytes available, e.g. a --rebuild run
+ * against an already-unpacked directory with no .crx in memory) is recorded
+ * as null, never fabricated.
+ */
+export function writeProvenance(outDir, { extensionId, version, store, crx, signature, crxrayVersion }) {
+  const provenance = {
+    extensionId: extensionId ?? null,
+    version: version ?? null,
+    store: store ?? null,
+    originalCrxSha256: crx ? createHash('sha256').update(crx).digest('hex') : null,
+    signature: signature ?? null,
+    crxrayVersion: crxrayVersion ?? null,
+    generatedAt: new Date().toISOString(),
+  };
+  writeFileSync(path.join(outDir, 'REBUILD-PROVENANCE.json'), JSON.stringify(provenance, null, 2));
+  return provenance;
 }
 
 function copyInto(src, dest) {
