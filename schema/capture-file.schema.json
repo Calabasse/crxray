@@ -36,6 +36,39 @@
         }
       }
     },
+    "mechanism": {
+      "type": "object",
+      "description": "Cross-references audit.js's static message-passing/endpoint maps against this run's events. A static finding with no runtime match stays listed, tagged confirmedAtRuntime: false -- never dropped.",
+      "properties": {
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": { "type": "string" },
+              "method": { "type": ["string", "null"] },
+              "headersKeys": { "type": "array", "items": { "type": "string" } },
+              "confirmedAtRuntime": { "type": "boolean" },
+              "observed": { "type": "array" }
+            }
+          }
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sender": {},
+              "listener": {},
+              "discriminants": { "type": "array", "items": { "type": "string" } },
+              "confidence": { "enum": ["exact", "probable", "ambiguous"] },
+              "confirmedAtRuntime": { "type": "boolean" },
+              "observed": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
     "limitations": {
       "type": "array",
       "minItems": 1,

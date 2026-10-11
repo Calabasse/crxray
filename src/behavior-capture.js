@@ -3,6 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { redactEvent } from './redact.js';
+import { auditExtension } from './audit.js';
+import { summarizeManifest } from './manifest.js';
+import { buildMechanismReport } from './mechanism.js';
 
 export const DISCLAIMER =
   'crxray capture-behavior is a verification aid for extensions you have the right to ' +
@@ -362,6 +365,10 @@ export async function captureBehavior(extensionDir, scenarioPath, opts = {}) {
 
   const manifestPath = path.join(extensionDir, 'manifest.json');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  // Static, no browser involved -- gives the message-passing/endpoint maps this capture's
+  // events get cross-referenced against below (see mechanism.js). Run before anything else
+  // touches extensionDir, same assumptions `crxray audit` already makes about that directory.
+  const staticAudit = auditExtension(extensionDir, manifest, summarizeManifest(manifest));
   const steps = parseScenario(scenarioPath);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
@@ -552,6 +559,7 @@ export async function captureBehavior(extensionDir, scenarioPath, opts = {}) {
     chromeVersion: null,
     timestamp: new Date().toISOString(),
     events,
+    mechanism: buildMechanismReport(staticAudit, events),
     limitations,
     disclaimer: DISCLAIMER,
   };

@@ -73,6 +73,27 @@ describe('captureBehavior captures pre-execution service-worker storage writes, 
   const networkEvents = capture.events.filter((e) => e.kind === 'network');
   assert.ok(networkEvents.some((e) => e.direction === 'response' && e.url.endsWith('sw.js')), 'network capture works regardless of the injection mechanism above');
 
+  // mechanism report (R12): cross-references audit.js's static maps against this same run's
+  // events. The fixture's sw.js opens with a real fetch() call -- network capture is CDP-level
+  // and unaffected by the one-shot/pre-resume timing issues above, so this side is a hard
+  // assertion, not a soft one.
+  assert.ok(onDisk.mechanism, 'capture file carries a mechanism section');
+  const probeEndpoint = onDisk.mechanism.endpoints.find((e) => e.url.includes('mechanism-probe'));
+  assert.ok(probeEndpoint, 'the static fetch() call site in sw.js is present in mechanism.endpoints');
+  assert.equal(probeEndpoint.method, 'POST');
+  assert.deepEqual(probeEndpoint.headersKeys, ['X-Test']);
+  assert.equal(probeEndpoint.confirmedAtRuntime, true, 'network-level capture confirms the fetch() actually fired, independent of the storage/message patching race');
+
+  // The PING/PONG message pair rides on the same patching race documented above (sendMessage
+  // is a one-shot call from the popup, a page-type target with its own separate, unconfirmed
+  // injection gap) -- so this stays a soft assertion, same discipline as the storage check.
+  const pingPair = onDisk.mechanism.messages.find((m) => m.discriminants.includes('PING'));
+  assert.ok(pingPair, 'the static sender/listener pair for PING is present in mechanism.messages');
+  assert.equal(pingPair.confidence, 'exact');
+  if (pingPair.confirmedAtRuntime) {
+    assert.ok(pingPair.observed.sent.length > 0 || pingPair.observed.received.length > 0);
+  }
+
   rmSync(outDir, { recursive: true, force: true });
 });
 
