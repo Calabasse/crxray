@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "crxray behavior-capture file",
+  "type": "object",
+  "required": ["schemaVersion", "extensionId", "events", "limitations", "disclaimer"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "scenarioId": { "type": "string" },
+    "extensionId": { "type": "string" },
+    "version": { "type": ["string", "null"] },
+    "chromeVersion": { "type": ["string", "null"] },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["seq", "ts", "kind"],
+        "properties": {
+          "seq": { "type": "integer", "minimum": 0 },
+          "ts": { "type": "integer" },
+          "kind": { "enum": ["network", "storage", "message", "console"] },
+          "direction": { "enum": ["request", "response", "sent", "received"] },
+          "targetType": { "type": "string" },
+          "url": { "type": "string" },
+          "method": { "type": "string" },
+          "status": { "type": "integer" },
+          "headers": { "type": "object" },
+          "body": {},
+          "truncated": { "type": "boolean" },
+          "originalByteLength": { "type": "integer" },
+          "area": { "enum": ["local", "sync"] },
+          "value": {},
+          "message": {},
+          "level": { "type": "string" },
+          "text": { "type": "string" }
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["capability", "target", "reason", "severity"],
+        "properties": {
+          "capability": { "type": "string" },
+          "target": { "type": "string" },
+          "reason": { "type": "string" },
+          "severity": { "enum": ["always-on", "known-gap", "blocking"] }
+        }
+      }
+    },
+    "disclaimer": { "type": "string" }
+  }
+}

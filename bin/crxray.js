@@ -9,6 +9,8 @@ import {
   processExtension,
   formatAuditReport,
   formatDiffReport,
+  captureBehavior,
+  CAPTURE_BEHAVIOR_DISCLAIMER,
 } from '../src/index.js';
 
 const HELP = `crxray — download Chrome & Edge extension source code from a store link
@@ -62,11 +64,23 @@ Download options:
 Diff options:
   crxray diff <dir-or-url> <dir-or-url>   Compare two unpacked dirs or download both
 
+Behavior capture (opt-in; never runs as part of a plain download):
+  crxray capture-behavior <extension-dir> --scenario <file> [options]
+      --scenario <file>   JSON scenario file ({"steps": [...]})-- see docs.
+      --yes-i-reviewed-permissions  Required: confirms you reviewed this
+                        extension's requested permissions (crxray audit)
+                        before letting it run in a real browser.
+      --timeout-ms <n>  Hard wall-clock cap for the scenario (default 60000).
+  -o, --out <file>      Capture file path (default: <dir>-capture.json)
+
+${CAPTURE_BEHAVIOR_DISCLAIMER}
+
 Examples:
   npx crxray https://chromewebstore.google.com/detail/ublock-origin-lite/ddkjiahejlhfcafbddmgiahcphecmpfh
   npx crxray <url> --audit --deobfuscate --beautify
   npx crxray diff ./old-version ./new-version
-  npx crxray audit ./some-extension/ --json`;
+  npx crxray audit ./some-extension/ --json
+  npx crxray capture-behavior ./some-extension/ --scenario scenario.json --yes-i-reviewed-permissions`;
 
 function fail(msg) {
   console.error(`crxray: ${msg}`);
@@ -103,6 +117,9 @@ try {
       beautify: { type: 'boolean' },
       'no-maps': { type: 'boolean' },
       'keep-maps': { type: 'boolean' },
+      scenario: { type: 'string' },
+      'yes-i-reviewed-permissions': { type: 'boolean' },
+      'timeout-ms': { type: 'string' },
     },
   });
 } catch (err) {
@@ -133,6 +150,8 @@ try {
     await runDiff(positionals.slice(1), values);
   } else if (command === 'audit') {
     await runAudit(positionals.slice(1), values);
+  } else if (command === 'capture-behavior') {
+    await runCaptureBehavior(positionals.slice(1), values);
   } else if (positionals.length === 0) {
     console.log(HELP);
     process.exit(1);
@@ -265,6 +284,28 @@ async function runAudit(args, values) {
   }
 
   console.log(formatAuditReport(result.audit));
+}
+
+async function runCaptureBehavior(args, values) {
+  const dir = args[0];
+  if (!dir) fail('capture-behavior requires a directory: crxray capture-behavior <extension-dir> --scenario <file>');
+  if (!values.scenario) fail('capture-behavior requires --scenario <file>');
+
+  const result = await captureBehavior(dir, values.scenario, {
+    outFile: values.out,
+    yesIReviewedPermissions: values['yes-i-reviewed-permissions'],
+    timeoutMs: values['timeout-ms'] ? Number(values['timeout-ms']) : undefined,
+    quiet: values.quiet,
+  });
+
+  if (values.json) {
+    console.log(JSON.stringify(result.capture, null, 2));
+    return;
+  }
+
+  console.log(`Captured ${result.capture.events.length} event(s) to ${result.outFile}`);
+  console.log(`${result.capture.limitations.length} limitation(s) recorded -- see the capture file's "limitations" field.`);
+  if (result.timedOut) console.log('Scenario timed out before completing; the capture reflects whatever was observed before the cutoff.');
 }
 
 async function runDiff(args, values) {

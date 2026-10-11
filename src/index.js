@@ -31,6 +31,10 @@ export { renameWithHumanify } from './humanify.js';
 export { rebuildExtension, writeProvenance } from './rebuild.js';
 export { diffExtensions, formatDiffReport } from './diff.js';
 export { recoverFromSourceMaps, removeSourceMaps } from './sourcemaps.js';
+// Deliberately NOT wired into crxray()/processExtension()'s default pipeline below -- this is
+// a separate, explicitly opt-in capability with its own CLI subcommand (never reachable via
+// `crxray <url>`'s flags). See docs/behavior-capture in the plan this implements.
+export { captureBehavior, DISCLAIMER as CAPTURE_BEHAVIOR_DISCLAIMER } from './behavior-capture.js';
 
 const CRXRAY_VERSION = JSON.parse(
   readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')
