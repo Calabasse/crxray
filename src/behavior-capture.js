@@ -6,6 +6,7 @@ import { redactEvent } from './redact.js';
 import { auditExtension } from './audit.js';
 import { summarizeManifest } from './manifest.js';
 import { buildMechanismReport } from './mechanism.js';
+import { buildCausalityEdges } from './causality.js';
 
 export const DISCLAIMER =
   'crxray capture-behavior is a verification aid for extensions you have the right to ' +
@@ -584,6 +585,7 @@ export async function captureBehavior(extensionDir, scenarioPath, opts = {}) {
     pushEvent({
       kind: 'network',
       direction: 'request',
+      sessionId: msg.sessionId,
       requestId,
       url: request.url,
       method: request.method,
@@ -598,6 +600,7 @@ export async function captureBehavior(extensionDir, scenarioPath, opts = {}) {
     const base = {
       kind: 'network',
       direction: 'response',
+      sessionId: msg.sessionId,
       requestId,
       url: response.url,
       status: response.status,
@@ -629,7 +632,7 @@ export async function captureBehavior(extensionDir, scenarioPath, opts = {}) {
   });
 
   client.on('Log.entryAdded', (msg) => {
-    pushEvent({ kind: 'console', level: msg.params.entry.level, text: msg.params.entry.text });
+    pushEvent({ kind: 'console', sessionId: msg.sessionId, level: msg.params.entry.level, text: msg.params.entry.text });
   });
 
   await client.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
@@ -685,6 +688,7 @@ export async function captureBehavior(extensionDir, scenarioPath, opts = {}) {
     timestamp: new Date().toISOString(),
     events,
     mechanism: buildMechanismReport(staticAudit, events),
+    timeline: { edges: buildCausalityEdges(events) },
     limitations,
     disclaimer: DISCLAIMER,
   };

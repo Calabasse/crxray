@@ -101,6 +101,31 @@ describe('captureBehavior captures pre-execution service-worker storage writes, 
   assert.equal(pingPair.confirmedAtRuntime, true, 'the popup\'s one-shot sendMessage() call is captured, not missed');
   assert.ok(pingPair.observed.sent.length > 0, 'the sent side of the pair carries the real captured message');
 
+  // Causal timeline (R13): a pure post-processing pass over the same events, no new browser
+  // mechanism. The popup's sent PING and the service worker's received PING are two separate
+  // events (different sessions) with identical content -- a hard assertion, same CDP-level
+  // reliability as the mechanism checks above. The message-receipt -> storage-write link is a
+  // same-session heuristic, explicitly 'probable', so this only asserts it exists when the
+  // underlying storage write is itself present (soft on the heuristic, hard on the real pair).
+  assert.ok(onDisk.timeline, 'capture file carries a timeline section');
+  const sentPing = capture.events.find((e) => e.kind === 'message' && e.direction === 'sent');
+  const receivedPing = capture.events.find((e) => e.kind === 'message' && e.direction === 'received');
+  assert.ok(sentPing && receivedPing, 'both sides of the PING round-trip were captured');
+  assert.ok(
+    onDisk.timeline.edges.some(
+      (e) => e.from === sentPing.seq && e.to === receivedPing.seq && e.basis === 'message-pair' && e.confidence === 'exact'
+    ),
+    'the sent PING links to the received PING as an exact message-pair edge'
+  );
+  if (pingValue) {
+    assert.ok(
+      onDisk.timeline.edges.some(
+        (e) => e.to === pingValue.seq && e.basis === 'same-session-proximity' && e.confidence === 'probable'
+      ),
+      'the repeated storage write links back to something in the same session shortly before it'
+    );
+  }
+
   rmSync(outDir, { recursive: true, force: true });
 });
 

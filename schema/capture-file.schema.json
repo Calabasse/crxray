@@ -18,6 +18,7 @@
         "properties": {
           "seq": { "type": "integer", "minimum": 0 },
           "ts": { "type": "integer" },
+          "sessionId": { "type": "string" },
           "kind": { "enum": ["network", "storage", "message", "console"] },
           "direction": { "enum": ["request", "response", "sent", "received"] },
           "targetType": { "type": "string" },
@@ -64,6 +65,25 @@
               "confidence": { "enum": ["exact", "probable", "ambiguous"] },
               "confirmedAtRuntime": { "type": "boolean" },
               "observed": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+    "timeline": {
+      "type": "object",
+      "description": "Causal links between events, derived purely from the events array -- no new browser mechanism. Each edge is honestly labeled by how sure it is: 'message-pair' (exact) links a sent message to the received event it caused; 'same-session-proximity' (probable) is a real heuristic, never claimed stronger than the evidence (same session, soon after).",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to", "basis", "confidence"],
+            "properties": {
+              "from": { "type": "integer", "minimum": 0 },
+              "to": { "type": "integer", "minimum": 0 },
+              "basis": { "enum": ["message-pair", "same-session-proximity"] },
+              "confidence": { "enum": ["exact", "probable"] }
             }
           }
         }
