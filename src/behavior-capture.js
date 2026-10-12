@@ -146,11 +146,82 @@ async function killAndCleanup(client, profileDir) {
   throw lastErr;
 }
 
+const SCRIPT_SRC_RE = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
+
+/**
+ * Every <script src="..."> URL in an HTML page, resolved against that page's own URL. Used to
+ * find the real entry script(s) a page-type target will run (see getEntryScriptUrls). Inline
+ * <script> blocks have no separate URL this can resolve and are not covered.
+ */
+function extractScriptSrcUrls(htmlContent, baseUrl) {
+  const urls = [];
+  SCRIPT_SRC_RE.lastIndex = 0;
+  let m;
+  while ((m = SCRIPT_SRC_RE.exec(htmlContent)) !== null) {
+    try {
+      urls.push(new URL(m[1], baseUrl).toString());
+    } catch {
+      // malformed src attribute; skip rather than throw
+    }
+  }
+  return urls;
+}
+
+/**
+ * The entry script URL(s) a target will execute, when determinable ahead of time -- lets
+ * instrumentAndResume set a real debugger breakpoint at each script's first line before the
+ * target ever resumes (R12, see that function's comment for why this closes the one-shot gap
+ * a plain post-resume patch attempt cannot). A service worker has exactly one, straight from
+ * the manifest. A page target's own URL is its HTML document, not a script -- its <script src>
+ * tags are read directly off disk, since extensionDir is already on hand and trusted the same
+ * way crxray's static pipeline already reads it. An inline <script> block (no src) is not
+ * covered: closing that would need the HTML document's own URL plus the block's line offset,
+ * which this round does not attempt -- a target with only inline scripts falls back to the
+ * pre-existing post-resume mechanism below, same as before this round.
+ */
+function getEntryScriptUrls(targetInfo, { extensionDir, extensionId, manifest }) {
+  // Target.setAutoAttach catches every new target in the browser, not just this extension's --
+  // Chrome's own bundled component extensions (e.g. its internal TTS engine) spin up service
+  // workers too. Without this check, a target that isn't ours would get handed OUR sw.js URL,
+  // which it will obviously never execute -- harmless (the breakpoint just never resolves,
+  // falling back to the pre-existing mechanism below), but wrong, and worth being exact about.
+  if (targetInfo.type === 'service_worker' && targetInfo.url?.includes(extensionId ?? '\u0000')) {
+    const swFile = manifest.background?.service_worker;
+    return swFile ? [`chrome-extension://${extensionId}/${swFile}`] : [];
+  }
+  if (targetInfo.type === 'page' && targetInfo.url?.startsWith('chrome-extension://')) {
+    try {
+      const pageUrl = new URL(targetInfo.url);
+      const htmlPath = path.join(extensionDir, decodeURIComponent(pageUrl.pathname));
+      const html = readFileSync(htmlPath, 'utf8');
+      return extractScriptSrcUrls(html, targetInfo.url);
+    } catch {
+      return []; // page HTML not readable from extensionDir -- breakpoint mechanism skipped
+    }
+  }
+  return [];
+}
+
 /**
  * Installs pre-execution instrumentation on a newly-attached, paused target and resumes it.
  *
- * The honest, fully-understood boundary of what this can and cannot catch (found by direct
- * testing, not assumed):
+ * R12 closed the structural one-shot gap documented below, for any target whose entry script
+ * URL is determinable (getEntryScriptUrls): a plain `Debugger.setBreakpointByUrl` at that
+ * script's line 0, column 0, registered before the target resumes. Confirmed by direct,
+ * repeated testing (5/5 identical real-Chrome runs), not assumed -- an EARLIER attempt at the
+ * same goal, `Debugger.setInstrumentationBreakpoint({instrumentation: 'beforeScriptExecution'})`,
+ * was accepted by the API with no error but never actually fired for either a service worker or
+ * a page target in this environment (Chrome 154); a REGULAR line breakpoint, by contrast, fires
+ * reliably, and fires in the target's actual, already-materialized execution context -- which
+ * also closes the separate page-target injection gap below, since injecting fresh at the pause
+ * itself (rather than beforehand, via `Page.addScriptToEvaluateOnNewDocument`, which can land in
+ * a context a navigation then replaces) no longer depends on that mechanism working at all.
+ *
+ * The pre-resume mechanisms below are kept as a second, independent layer -- harmless where the
+ * breakpoint above already did the job, and still the only mechanism for a target whose entry
+ * script URL could not be determined (an inline-only page, or a manifest this parser couldn't
+ * read). The honest, fully-understood boundary of what THAT fallback layer can and cannot catch
+ * (found by direct testing, not assumed) still applies to such a target:
  *
  * - `chrome.storage`/`chrome.runtime` do not exist on a service worker's global scope at the
  *   instant it is paused pre-resume (confirmed: a bare reference throws ReferenceError there).
@@ -165,22 +236,14 @@ async function killAndCleanup(client, profileDir) {
  * - A `Object.defineProperty` trap on `globalThis.chrome` (installed before `chrome` exists)
  *   catches the moment the real `chrome` object is assigned, and was confirmed to catch a
  *   storage write made in response to a later event (the popup's message round-trip).
- * - What neither mechanism can catch: a call made synchronously as part of the target's own
- *   top-level script execution, before Node's first follow-up round-trip completes --
- *   confirmed by direct test (the extension's very first, one-time `chrome.storage.local.set`
- *   and its one-time `chrome.runtime.onMessage.addListener` registration are both missed; a
- *   *later*, repeated `chrome.storage.local.set` call -- made after the patch has had time to
- *   land -- is reliably captured, with correct redaction). A one-shot registration's result
- *   (the listener that got bound) stays whatever it was at registration time regardless of
- *   patching later, so this is a structural boundary, not a timing bug to keep chasing.
- * - page-type targets (popup/options): `Page.addScriptToEvaluateOnNewDocument` registers
- *   successfully (confirmed, no error), but the registered script was not observed to run for
- *   a `Target.createTarget`-created popup in this environment -- storage/message capture for
- *   page-type targets should be treated as unconfirmed, not assumed equivalent to the service
- *   worker's partial coverage above. Network and console capture are unaffected (CDP-level,
- *   not dependent on this injection at all) and work for every target type.
+ * - What neither mechanism can catch, absent the breakpoint above: a call made synchronously as
+ *   part of the target's own top-level script execution, before Node's first follow-up
+ *   round-trip completes (confirmed by direct test prior to R12: the extension's very first,
+ *   one-time `chrome.storage.local.set` and its one-time `addListener` registration were both
+ *   missed; a *later*, repeated call -- made after the patch has had time to land -- was
+ *   reliably captured, with correct redaction).
  */
-async function instrumentAndResume(client, sessionId, targetInfo, limitations) {
+async function instrumentAndResume(client, sessionId, targetInfo, limitations, breakpointCtx) {
   const defineInjectSource = `
     (function() {
       const marker = ${JSON.stringify(CAPTURE_MARKER)};
@@ -256,6 +319,32 @@ async function instrumentAndResume(client, sessionId, targetInfo, limitations) {
     })();
   `;
 
+  // R12: a real breakpoint at the entry script's own first line, registered before resume --
+  // fires in the target's live execution context, after Chrome's own binding setup but before
+  // any of the target's own code (confirmed: see this function's own comment above). The
+  // target stays genuinely paused -- nothing in its own script can run -- until our own
+  // Debugger.paused handler (below, in captureBehavior) explicitly resumes it, so this is a
+  // real await on that handler's own confirmation, never a race against it: an EARLIER version
+  // of this polled `breakpointConfirmed` from an independent Node-timer retry loop and could
+  // observe it as still false at the moment the retry loop's own, unrelated check happened to
+  // return true first -- correct data (the retry loop's check also runs while the target is
+  // still paused, so it can't miss the one-shot call either), but the WRONG attribution in the
+  // limitations wording below. Awaiting the breakpoint's own promise removes that race.
+  const scriptUrls = getEntryScriptUrls(targetInfo, breakpointCtx);
+  let breakpointConfirmedPromise = null;
+  if (scriptUrls.length > 0) {
+    await client.send('Debugger.enable', {}, sessionId);
+    for (const url of scriptUrls) {
+      await client.send('Debugger.setBreakpointByUrl', { url, lineNumber: 0, columnNumber: 0 }, sessionId);
+    }
+    breakpointConfirmedPromise = new Promise((resolve) => {
+      breakpointCtx.pendingBreakpointInjections.set(sessionId, {
+        injectSource: defineInjectSource,
+        onConfirmed: () => resolve(true),
+      });
+    });
+  }
+
   if (targetInfo.type === 'service_worker') {
     await client.send('Runtime.evaluate', { expression: defineInjectSource }, sessionId);
   } else {
@@ -267,32 +356,46 @@ async function instrumentAndResume(client, sessionId, targetInfo, limitations) {
   await client.send('Log.enable', {}, sessionId);
   await client.send('Runtime.runIfWaitingForDebugger', {}, sessionId);
 
-  // Node-driven follow-up attempts (see function comment for why this has to be Node's timer,
-  // not the worker's own).
   let patched = false;
-  for (const delayMs of [0, 15, 40, 100, 300]) {
-    await new Promise((r) => setTimeout(r, delayMs));
-    const res = await client.send(
-      'Runtime.evaluate',
-      { expression: 'globalThis.__crxrayTryPatch && globalThis.__crxrayTryPatch()' },
-      sessionId
-    );
-    if (res.result?.result?.value === true) {
-      patched = true;
-      break;
+  let breakpointConfirmed = false;
+  if (breakpointConfirmedPromise) {
+    // 2s is generous headroom over every observed real confirmation (well under 100ms) -- a
+    // safety bound in case a target we set a breakpoint on never actually hits it, not a
+    // budget this capability expects to spend routinely.
+    breakpointConfirmed = await Promise.race([
+      breakpointConfirmedPromise,
+      new Promise((resolve) => setTimeout(() => resolve(false), 2000)),
+    ]);
+    patched = breakpointConfirmed;
+  }
+
+  // Node-driven follow-up attempts (see function comment for why this has to be Node's timer,
+  // not the worker's own) -- the only path left once the breakpoint above either wasn't set
+  // (no determinable entry script URL) or didn't confirm within its own timeout.
+  if (!patched) {
+    for (const delayMs of [0, 15, 40, 100, 300]) {
+      await new Promise((r) => setTimeout(r, delayMs));
+      const res = await client.send(
+        'Runtime.evaluate',
+        { expression: 'globalThis.__crxrayTryPatch && globalThis.__crxrayTryPatch()' },
+        sessionId
+      );
+      if (res.result?.result?.value === true) {
+        patched = true;
+        break;
+      }
     }
   }
-  // Always added, regardless of `patched`: even a confirmed-patched target only has
-  // after-the-patch coverage. A one-shot call made at the target's own top level, before the
-  // first Node round-trip above completes, is a structural miss this capability cannot close
-  // (see the function comment) -- so this capability is never claimed complete, only attempted.
+
   addLimitation(limitations, {
     capability: 'storageMessageLiveCapture',
     target: targetInfo.type,
-    reason: patched
-      ? 'chrome.storage/chrome.runtime were patched, but only after the target\'s own top-level script may have already run -- a one-time call made at startup (e.g. an initial storage write or a message-listener registration) can still be missed; a later, repeated call made after patching is reliably captured'
-      : 'could not confirm chrome.storage/chrome.runtime were ever successfully patched for this target; treat any storage/message events as best-effort, not complete',
-    severity: 'known-gap',
+    reason: breakpointConfirmed
+      ? "chrome.storage/chrome.runtime were patched via a debugger breakpoint on this target's own entry script, before any of its top-level code ran -- both the first, one-shot call and any later, repeated call are captured"
+      : patched
+        ? "chrome.storage/chrome.runtime were patched, but only after the target's own top-level script may have already run (no entry script URL could be determined for this target, so the breakpoint mechanism above was skipped) -- a one-time call made at startup can still be missed; a later, repeated call made after patching is reliably captured"
+        : 'could not confirm chrome.storage/chrome.runtime were ever successfully patched for this target; treat any storage/message events as best-effort, not complete',
+    severity: breakpointConfirmed ? 'always-on' : 'known-gap',
   });
 }
 
@@ -404,10 +507,27 @@ export async function captureBehavior(extensionDir, scenarioPath, opts = {}) {
   ]);
 
   const pendingResponseBodies = new Map(); // requestId -> {sessionId, url}
+  // R12: sessionId -> { injectSource, onConfirmed } for a target instrumentAndResume set a real
+  // breakpoint on. One listener handles every such session, rather than one per attach --
+  // see instrumentAndResume's own comment for why this mechanism exists.
+  const pendingBreakpointInjections = new Map();
 
   function pushEvent(raw) {
     events.push({ seq: seq++, ts: Date.now(), ...redactEvent(raw) });
   }
+
+  client.on('Debugger.paused', async (msg) => {
+    const entry = pendingBreakpointInjections.get(msg.sessionId);
+    if (!entry) return; // not a pause this capability caused; nothing registered to resume it
+    await client.send('Runtime.evaluate', { expression: entry.injectSource }, msg.sessionId);
+    const res = await client.send(
+      'Runtime.evaluate',
+      { expression: 'globalThis.__crxrayTryPatch && globalThis.__crxrayTryPatch()' },
+      msg.sessionId
+    );
+    if (res.result?.result?.value === true) entry.onConfirmed();
+    await client.send('Debugger.resume', {}, msg.sessionId);
+  });
 
   client.on('Target.attachedToTarget', (msg) => {
     const { sessionId, targetInfo, waitingForDebugger } = msg.params;
@@ -432,7 +552,12 @@ export async function captureBehavior(extensionDir, scenarioPath, opts = {}) {
       return;
     }
 
-    instrumentAndResume(client, sessionId, targetInfo, limitations).catch((err) => {
+    instrumentAndResume(client, sessionId, targetInfo, limitations, {
+      extensionDir,
+      extensionId,
+      manifest,
+      pendingBreakpointInjections,
+    }).catch((err) => {
       addLimitation(limitations, {
         capability: 'preExecutionInstrumentation',
         target: targetInfo.type,

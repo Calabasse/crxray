@@ -51,23 +51,32 @@ describe('captureBehavior captures pre-execution service-worker storage writes, 
   assert.ok(onDisk.limitations.some((l) => l.severity === 'always-on'), 'standard scope caveat always present');
   assert.ok(onDisk.disclaimer.includes('verification aid'));
 
-  // A repeated call made AFTER the patch has landed is USUALLY captured -- but this is a real
-  // race against the target's own code, confirmed non-deterministic by direct testing (this
-  // exact assertion was seen to pass in isolation and fail under the full suite's timing). A
-  // one-shot call made at the target's own top level is a structural, not probabilistic, miss
-  // -- see instrumentAndResume's own comment in src/behavior-capture.js. Asserting the capture
-  // always wins a race it is documented not to reliably win would itself be converting
-  // uncertainty into a false PASS, so this test only asserts the one thing that IS
-  // deterministic: whenever a storage write IS captured, it is correctly redacted.
+  // R12 closed the one-shot blind spot documented in instrumentAndResume's own comment: a real
+  // debugger breakpoint at the entry script's own first line holds the target paused -- nothing
+  // in its own code can run -- until patching is confirmed, so the extension's very first,
+  // one-time chrome.storage.local.set() (swStarted/token, the one-shot call this harness used
+  // to structurally miss) is now a hard assertion, not a soft one. Confirmed deterministic
+  // across 9 direct repeated real-Chrome runs before this test was written, not assumed.
   const storageEvents = capture.events.filter((e) => e.kind === 'storage');
+  const oneShotWrite = storageEvents.find((e) => e.value?.swStarted === true);
+  assert.ok(oneShotWrite, 'the extension\'s very first, one-time storage write is captured, not missed');
+  assert.equal(oneShotWrite.value.token, '[REDACTED]', 'the one-shot write\'s own secret-shaped value is redacted');
+
   const pingValue = storageEvents.find((e) => 'apiKey' in (e.value ?? {}));
-  if (pingValue) {
-    assert.equal(pingValue.value.apiKey, '[REDACTED]', 'a secret-shaped storage key is redacted before being written to disk');
-  }
+  assert.ok(pingValue, 'the later, repeated storage write is also captured');
+  assert.equal(pingValue.value.apiKey, '[REDACTED]', 'a secret-shaped storage key is redacted before being written to disk');
 
   assert.ok(
-    onDisk.limitations.some((l) => l.capability === 'storageMessageLiveCapture'),
-    'the storage/message capture boundary is always named, never silently claimed complete'
+    onDisk.limitations.some(
+      (l) => l.capability === 'storageMessageLiveCapture' && l.target === 'service_worker' && l.severity === 'always-on'
+    ),
+    'the service worker\'s entry script URL is determinable from the manifest, so its breakpoint-confirmed limitation entry is always present'
+  );
+  assert.ok(
+    onDisk.limitations.some(
+      (l) => l.capability === 'storageMessageLiveCapture' && l.target === 'page' && l.severity === 'always-on'
+    ),
+    'the popup\'s entry script URL is read off its own HTML, so its breakpoint-confirmed limitation entry is always present'
   );
 
   const networkEvents = capture.events.filter((e) => e.kind === 'network');
@@ -84,15 +93,13 @@ describe('captureBehavior captures pre-execution service-worker storage writes, 
   assert.deepEqual(probeEndpoint.headersKeys, ['X-Test']);
   assert.equal(probeEndpoint.confirmedAtRuntime, true, 'network-level capture confirms the fetch() actually fired, independent of the storage/message patching race');
 
-  // The PING/PONG message pair rides on the same patching race documented above (sendMessage
-  // is a one-shot call from the popup, a page-type target with its own separate, unconfirmed
-  // injection gap) -- so this stays a soft assertion, same discipline as the storage check.
+  // R12 also closes the popup's one-shot sendMessage() call -- its own entry script (popup.js)
+  // is read off disk and breakpointed the same way, so this is a hard assertion too now.
   const pingPair = onDisk.mechanism.messages.find((m) => m.discriminants.includes('PING'));
   assert.ok(pingPair, 'the static sender/listener pair for PING is present in mechanism.messages');
   assert.equal(pingPair.confidence, 'exact');
-  if (pingPair.confirmedAtRuntime) {
-    assert.ok(pingPair.observed.sent.length > 0 || pingPair.observed.received.length > 0);
-  }
+  assert.equal(pingPair.confirmedAtRuntime, true, 'the popup\'s one-shot sendMessage() call is captured, not missed');
+  assert.ok(pingPair.observed.sent.length > 0, 'the sent side of the pair carries the real captured message');
 
   rmSync(outDir, { recursive: true, force: true });
 });
