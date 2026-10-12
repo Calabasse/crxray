@@ -302,10 +302,61 @@ async function instrumentAndResume(client, sessionId, targetInfo, limitations, b
         return true;
       }
 
+      // R14: crypto.subtle is a standard Web Crypto API global, not something Chrome binds late
+      // into an extension context the way chrome.* is -- confirmed present even at the earliest
+      // pre-resume pause (unlike chrome.storage/chrome.runtime). Only the five "operation"
+      // methods are wrapped (digest/sign/verify/encrypt/decrypt); key-management methods
+      // (generateKey/importKey/exportKey/wrapKey/unwrapKey/deriveKey/deriveBits) are deliberately
+      // left unpatched -- several of those can return actual raw key bytes, a materially
+      // different and riskier capture-safety question than "did this extension call sign()".
+      // Reports metadata only (algorithm name, byte lengths, verify's boolean result) -- never
+      // the actual input/output bytes, so no new redaction logic is needed for this event kind.
+      function patchCrypto() {
+        if (!(globalThis.crypto && globalThis.crypto.subtle)) return false;
+        const subtle = globalThis.crypto.subtle;
+        if (subtle.__crxrayPatched) return true;
+        function byteLength(data) {
+          if (!data) return 0;
+          if (data.byteLength !== undefined) return data.byteLength;
+          if (data.buffer && data.buffer.byteLength !== undefined) return data.buffer.byteLength;
+          return 0;
+        }
+        function algorithmName(algorithm) {
+          return typeof algorithm === 'string' ? algorithm : algorithm?.name;
+        }
+        for (const method of ['digest', 'sign', 'encrypt', 'decrypt']) {
+          const original = subtle[method];
+          if (typeof original !== 'function') continue;
+          subtle[method] = function (algorithm, ...rest) {
+            const data = rest[rest.length - 1];
+            const resultPromise = original.apply(subtle, [algorithm, ...rest]);
+            resultPromise.then(
+              (output) => report({ kind: 'crypto', method, algorithm: algorithmName(algorithm), dataByteLength: byteLength(data), outputByteLength: byteLength(output) }),
+              () => report({ kind: 'crypto', method, algorithm: algorithmName(algorithm), dataByteLength: byteLength(data), failed: true })
+            );
+            return resultPromise;
+          };
+        }
+        if (typeof subtle.verify === 'function') {
+          const originalVerify = subtle.verify;
+          subtle.verify = function (algorithm, key, signature, data) {
+            const resultPromise = originalVerify.call(subtle, algorithm, key, signature, data);
+            resultPromise.then(
+              (verified) => report({ kind: 'crypto', method: 'verify', algorithm: algorithmName(algorithm), dataByteLength: byteLength(data), verified }),
+              () => report({ kind: 'crypto', method: 'verify', algorithm: algorithmName(algorithm), dataByteLength: byteLength(data), failed: true })
+            );
+            return resultPromise;
+          };
+        }
+        subtle.__crxrayPatched = true;
+        return true;
+      }
+
       globalThis.__crxrayTryPatch = function () {
         const storageOk = patchStorage();
         const runtimeOk = patchRuntime();
-        globalThis.__crxrayNamespaceCheck = { chromeStorage: storageOk, chromeRuntime: runtimeOk };
+        const cryptoOk = patchCrypto();
+        globalThis.__crxrayNamespaceCheck = { chromeStorage: storageOk, chromeRuntime: runtimeOk, crypto: cryptoOk };
         return storageOk && runtimeOk;
       };
       if (!globalThis.__crxrayTryPatch() && typeof chrome === 'undefined') {
@@ -405,6 +456,18 @@ async function instrumentAndResume(client, sessionId, targetInfo, limitations, b
         ? "chrome.storage/chrome.runtime were patched, but only after the target's own top-level script may have already run (no entry script URL could be determined for this target, so the breakpoint mechanism above was skipped) -- a one-time call made at startup can still be missed; a later, repeated call made after patching is reliably captured"
         : 'could not confirm chrome.storage/chrome.runtime were ever successfully patched for this target; treat any storage/message events as best-effort, not complete',
     severity: breakpointConfirmed ? 'always-on' : 'known-gap',
+  });
+
+  // R14: unlike chrome.storage/chrome.runtime, crypto.subtle is confirmed present at every
+  // patch attempt (see patchCrypto's own comment) -- so this is a fixed scope boundary, not a
+  // per-run confirmation question. A hand-rolled or bundled pure-JS crypto implementation (a
+  // vendored HMAC/AES library, common for custom request-signing schemes) makes no browser API
+  // call this mechanism can intercept, and is invisible to it.
+  addLimitation(limitations, {
+    capability: 'cryptoLiveCapture',
+    target: targetInfo.type,
+    reason: 'only Web Crypto API (crypto.subtle) operations are captured -- digest/sign/verify/encrypt/decrypt, metadata only (algorithm, byte lengths), never raw key material or actual input/output bytes; a pure-JS crypto implementation bundled into the extension makes no browser API call this can see',
+    severity: 'always-on',
   });
 }
 

@@ -1,3 +1,5 @@
+crypto.subtle.digest('SHA-256', new TextEncoder().encode('crxray-fixture')).catch(() => {});
+
 fetch('http://127.0.0.1:1/mechanism-probe', { method: 'POST', headers: { 'X-Test': '1' } }).catch(() => {});
 
 chrome.storage.local.set({ swStarted: true, token: 'should-not-redact-in-storage-value-test' });

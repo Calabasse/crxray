@@ -19,7 +19,7 @@
           "seq": { "type": "integer", "minimum": 0 },
           "ts": { "type": "integer" },
           "sessionId": { "type": "string" },
-          "kind": { "enum": ["network", "storage", "message", "console"] },
+          "kind": { "enum": ["network", "storage", "message", "console", "crypto"] },
           "direction": { "enum": ["request", "response", "sent", "received"] },
           "targetType": { "type": "string" },
           "url": { "type": "string" },
@@ -33,7 +33,12 @@
           "value": {},
           "message": {},
           "level": { "type": "string" },
-          "text": { "type": "string" }
+          "text": { "type": "string" },
+          "algorithm": { "type": "string" },
+          "dataByteLength": { "type": "integer" },
+          "outputByteLength": { "type": "integer" },
+          "verified": { "type": "boolean" },
+          "failed": { "type": "boolean" }
         }
       }
     },

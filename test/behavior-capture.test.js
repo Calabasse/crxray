@@ -79,6 +79,21 @@ describe('captureBehavior captures pre-execution service-worker storage writes, 
     'the popup\'s entry script URL is read off its own HTML, so its breakpoint-confirmed limitation entry is always present'
   );
 
+  // R14: crypto.subtle is a standard Web Crypto API global, confirmed present (unlike
+  // chrome.storage/chrome.runtime) even at the earliest pre-resume breakpoint pause -- so the
+  // extension's one-shot digest() call, made before chrome.storage even exists, is captured
+  // with the same hard-assertion confidence as the network probe above, not a soft one.
+  const cryptoEvents = capture.events.filter((e) => e.kind === 'crypto');
+  const digestEvent = cryptoEvents.find((e) => e.method === 'digest');
+  assert.ok(digestEvent, 'the one-shot crypto.subtle.digest() call is captured, not missed');
+  assert.equal(digestEvent.algorithm, 'SHA-256');
+  assert.equal(typeof digestEvent.dataByteLength, 'number');
+  assert.equal(typeof digestEvent.outputByteLength, 'number');
+  assert.ok(
+    onDisk.limitations.some((l) => l.capability === 'cryptoLiveCapture'),
+    'the Web-Crypto-only scope boundary (pure-JS crypto libraries are invisible to this) is always named'
+  );
+
   const networkEvents = capture.events.filter((e) => e.kind === 'network');
   assert.ok(networkEvents.some((e) => e.direction === 'response' && e.url.endsWith('sw.js')), 'network capture works regardless of the injection mechanism above');
 
