@@ -152,7 +152,13 @@ const SCRIPT_SRC_RE = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
 /**
  * Every <script src="..."> URL in an HTML page, resolved against that page's own URL. Used to
  * find the real entry script(s) a page-type target will run (see getEntryScriptUrls). Inline
- * <script> blocks have no separate URL this can resolve and are not covered.
+ * <script> blocks are deliberately not covered here -- not an open gap, a dead end: Chrome's
+ * extension_pages CSP cannot be relaxed below `script-src 'self' 'wasm-unsafe-eval'` (confirmed
+ * via Chrome's own docs and a direct test: a real extension's popup with an inline <script>
+ * calling chrome.storage.local.set was blocked outright, console reported a CSP violation, the
+ * write never happened). No extension page can ever execute inline JS with access to chrome.*
+ * APIs -- the only context that permits inline scripts (a sandboxed page) is also the only
+ * context chrome.* APIs are unavailable in. Investigated and closed, not deferred.
  */
 function extractScriptSrcUrls(htmlContent, baseUrl) {
   const urls = [];
@@ -175,10 +181,11 @@ function extractScriptSrcUrls(htmlContent, baseUrl) {
  * a plain post-resume patch attempt cannot). A service worker has exactly one, straight from
  * the manifest. A page target's own URL is its HTML document, not a script -- its <script src>
  * tags are read directly off disk, since extensionDir is already on hand and trusted the same
- * way crxray's static pipeline already reads it. An inline <script> block (no src) is not
- * covered: closing that would need the HTML document's own URL plus the block's line offset,
- * which this round does not attempt -- a target with only inline scripts falls back to the
- * pre-existing post-resume mechanism below, same as before this round.
+ * way crxray's static pipeline already reads it. An inline <script> block (no src) is
+ * deliberately not covered -- confirmed unreachable for chrome.* calls, not a remaining gap
+ * (see extractScriptSrcUrls's own comment above for the CSP evidence). A target with only
+ * inline scripts, or whose manifest this parser couldn't read, falls back to the pre-existing
+ * post-resume mechanism below.
  */
 function getEntryScriptUrls(targetInfo, { extensionDir, extensionId, manifest }) {
   // Target.setAutoAttach catches every new target in the browser, not just this extension's --
@@ -220,8 +227,9 @@ function getEntryScriptUrls(targetInfo, { extensionDir, extensionId, manifest })
  *
  * The pre-resume mechanisms below are kept as a second, independent layer -- harmless where the
  * breakpoint above already did the job, and still the only mechanism for a target whose entry
- * script URL could not be determined (an inline-only page, or a manifest this parser couldn't
- * read). The honest, fully-understood boundary of what THAT fallback layer can and cannot catch
+ * script URL could not be determined (a manifest this parser couldn't read; an inline-only page
+ * is not actually a live case for chrome.* calls -- see extractScriptSrcUrls's comment above).
+ * The honest, fully-understood boundary of what THAT fallback layer can and cannot catch
  * (found by direct testing, not assumed) still applies to such a target:
  *
  * - `chrome.storage`/`chrome.runtime` do not exist on a service worker's global scope at the
