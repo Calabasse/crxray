@@ -210,3 +210,22 @@ chrome.runtime.onMessage.addListener((msg) => {
   assert.equal(calls[0].kind, 'depth-limit');
   assert.ok(!calls.some((c) => c.name === 'fetch'), 'f5/fetch is never reached -- the cap actually stopped recursion');
 });
+
+test('buildHandlerCallGraph resolves a listener registered by named function reference', () => {
+  const source = `
+function myHandler(msg) {
+  chrome.storage.local.get('x');
+}
+chrome.runtime.onMessage.addListener(myHandler);
+`;
+  const calls = buildHandlerCallGraph(source, listenerIndex(source));
+  assert.deepEqual(calls, [
+    { name: 'chrome.storage.local.get', kind: 'chrome-api', path: ['myHandler', 'chrome.storage.local.get'] },
+  ]);
+});
+
+test('buildHandlerCallGraph reports unresolved when the listener reference has no matching declaration', () => {
+  const source = `chrome.runtime.onMessage.addListener(someImportedHandler);\n`;
+  const calls = buildHandlerCallGraph(source, listenerIndex(source));
+  assert.deepEqual(calls, [{ kind: 'unresolved', name: 'someImportedHandler', path: ['someImportedHandler'] }]);
+});
