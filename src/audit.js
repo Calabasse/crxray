@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import * as acorn from 'acorn';
 import { buildEntryPointMap } from './map.js';
 import { walkFiles, relPath, isSupersededByUnpack, isWakaruOutput, isHumanifyOutput } from './walk.js';
 
@@ -248,6 +249,174 @@ const MESSAGE_DISCRIMINANT_RE =
   /\b(?:type|action|cmd|command)\s*:\s*['"`]([\w.-]+)['"`]|\b(?:type|action|cmd|command)\s*===?\s*['"`]([\w.-]+)['"`]|['"`]([\w.-]+)['"`]\s*===?\s*\w+(?:\.\w+)?\.(?:type|action|cmd|command)\b/g;
 const MESSAGE_DISCRIMINANT_PROXIMITY_CHARS = 150;
 
+// R16: a real call graph for the listener (callee) side of a message handler -- what
+// chrome.*/network calls it can reach, and the local-function chain leading to each one.
+// Deliberately NOT the sender side (see design spec). Bounded to 4 hops of local-function
+// calls, same-file only -- see the spec's "Known limitations" for exactly what this does
+// not attempt (alias tracking, nested-closure resolution, cross-file resolution).
+const CALL_GRAPH_MAX_DEPTH = 4;
+const NETWORK_CALLEE_NAMES = new Set(['fetch']);
+const NETWORK_CONSTRUCTOR_NAMES = new Set(['XMLHttpRequest', 'WebSocket']);
+
+// Generic deep walk: finds every CallExpression/NewExpression anywhere in a subtree,
+// including inside nested function literals (an inline listener IS a nested function
+// literal relative to the file's top level, and a .then()/setTimeout() callback inside it
+// is itself nested further -- all of that is genuinely "what this function body does").
+// Does not stop at function boundaries; only the hop-by-hop resolution in
+// buildCallGraphFromProgram decides what counts as a new hop vs. the same hop's flat list.
+function deepCollectCallSites(root) {
+  const calls = [];
+  function visit(node) {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    if (node.type === 'CallExpression' || node.type === 'NewExpression') calls.push(node);
+    for (const key of Object.keys(node)) {
+      if (key === 'start' || key === 'end' || key === 'loc' || key === 'range' || key === 'type') continue;
+      const value = node[key];
+      if (value && typeof value === 'object') visit(value);
+    }
+  }
+  visit(root);
+  return calls;
+}
+
+// Reconstructs a clean MemberExpression chain rooted at a plain Identifier into a dotted
+// string (e.g. "chrome.storage.local.set"). Returns null for anything that isn't a clean
+// chain -- computed/bracket access, a call in the middle -- so chrome-api classification
+// below only matches the literal dotted-call shape the spec defines, nothing looser.
+function dottedChain(node) {
+  const parts = [];
+  let current = node;
+  while (current.type === 'MemberExpression') {
+    if (current.computed) return null;
+    if (current.property.type !== 'Identifier') return null;
+    parts.unshift(current.property.name);
+    current = current.object;
+  }
+  if (current.type !== 'Identifier') return null;
+  parts.unshift(current.name);
+  return parts.join('.');
+}
+
+// Finds every top-level (file-scope) named function this file declares, by the two shapes
+// that matter: `function foo() {}` and `const foo = function/(...)=>{}`. Deliberately not
+// recursive into nested scopes -- see the spec's "No nested-closure scope resolution".
+function collectTopLevelFunctions(programBody) {
+  const map = new Map();
+  for (const stmt of programBody) {
+    if (stmt.type === 'FunctionDeclaration' && stmt.id) {
+      map.set(stmt.id.name, stmt);
+    } else if (stmt.type === 'VariableDeclaration') {
+      for (const decl of stmt.declarations) {
+        if (
+          decl.id?.type === 'Identifier' &&
+          decl.init &&
+          (decl.init.type === 'FunctionExpression' || decl.init.type === 'ArrowFunctionExpression')
+        ) {
+          map.set(decl.id.name, decl.init);
+        }
+      }
+    }
+  }
+  return map;
+}
+
+// Classifies one CallExpression/NewExpression. Returns null for a NewExpression that isn't
+// a recognized network constructor (new Map(), new Date(), etc.) -- those aren't calls this
+// analysis tracks at all, not even as 'unresolved'.
+function classifyCall(node) {
+  if (node.type === 'NewExpression') {
+    if (node.callee.type === 'Identifier' && NETWORK_CONSTRUCTOR_NAMES.has(node.callee.name)) {
+      return { kind: 'network', name: node.callee.name };
+    }
+    return null;
+  }
+  const callee = node.callee;
+  if (callee.type === 'Identifier') {
+    if (NETWORK_CALLEE_NAMES.has(callee.name)) return { kind: 'network', name: callee.name };
+    return { kind: 'identifier', name: callee.name };
+  }
+  if (callee.type === 'MemberExpression') {
+    const dotted = dottedChain(callee);
+    if (dotted && (dotted.startsWith('chrome.') || dotted.startsWith('browser.'))) {
+      return { kind: 'chrome-api', name: dotted };
+    }
+    return { kind: 'unresolved', name: dotted ?? '(complex member expression)' };
+  }
+  return { kind: 'unresolved', name: '(non-identifier callee)' };
+}
+
+/**
+ * The call graph for one already-located listener function, walked from an already-parsed
+ * acorn Program. See the design spec (docs/superpowers/specs/2026-10-12-message-handler-call-graph-design.md)
+ * for the full algorithm description; this is its direct implementation.
+ */
+function buildCallGraphFromProgram(program, matchIndex) {
+  const allCalls = deepCollectCallSites(program);
+  const callExprAtMatch = allCalls.find((n) => n.type === 'CallExpression' && n.callee.start === matchIndex);
+  if (!callExprAtMatch) return [{ kind: 'unresolved' }];
+
+  const topLevelFns = collectTopLevelFunctions(program.body);
+
+  const firstArg = callExprAtMatch.arguments[0];
+  let startNode = null;
+  let startName = '(anonymous)';
+  if (firstArg?.type === 'Identifier') {
+    startName = firstArg.name;
+    startNode = topLevelFns.get(firstArg.name) ?? null;
+  } else if (firstArg?.type === 'FunctionExpression' || firstArg?.type === 'ArrowFunctionExpression') {
+    startNode = firstArg;
+    startName = firstArg.id?.name ?? '(anonymous)';
+  }
+  if (!startNode) return [{ kind: 'unresolved', name: firstArg?.name, path: [startName] }];
+
+  const results = [];
+  function walk(fnNode, path, visited) {
+    for (const callNode of deepCollectCallSites(fnNode.body)) {
+      const classified = classifyCall(callNode);
+      if (!classified) continue;
+
+      if (classified.kind !== 'identifier') {
+        results.push({ name: classified.name, kind: classified.kind, path: [...path, classified.name] });
+        continue;
+      }
+
+      const target = topLevelFns.get(classified.name);
+      if (!target) {
+        results.push({ name: classified.name, kind: 'unresolved', path: [...path, classified.name] });
+      } else if (visited.has(target)) {
+        results.push({ name: classified.name, kind: 'cycle', path: [...path, classified.name] });
+      } else if (path.length >= CALL_GRAPH_MAX_DEPTH) {
+        results.push({ name: classified.name, kind: 'depth-limit', path: [...path, classified.name] });
+      } else {
+        walk(target, [...path, classified.name], new Set([...visited, target]));
+      }
+    }
+  }
+
+  walk(startNode, [startName], new Set([startNode]));
+  return results;
+}
+
+/**
+ * Convenience wrapper for direct unit testing: parses `content` itself and delegates to
+ * buildCallGraphFromProgram. Production code (collectMessagePassing below) calls
+ * buildCallGraphFromProgram directly instead, so a file with multiple listeners is only
+ * parsed once.
+ */
+export function buildHandlerCallGraph(content, matchIndex, sourceType = 'script') {
+  let program;
+  try {
+    program = acorn.parse(content, { ecmaVersion: 'latest', sourceType, allowReturnOutsideFunction: true });
+  } catch {
+    return [{ kind: 'unparseable' }];
+  }
+  return buildCallGraphFromProgram(program, matchIndex);
+}
+
 function extractDiscriminants(content, index) {
   const start = Math.max(0, index - MESSAGE_DISCRIMINANT_PROXIMITY_CHARS);
   const end = Math.min(content.length, index + MESSAGE_DISCRIMINANT_PROXIMITY_CHARS);
@@ -279,15 +448,23 @@ function countByDiscriminant(entries) {
  * (onMessage/onConnect) addListener call sites by inferable discriminant. No forced 1:1
  * pairing -- see module comment above.
  */
-export function collectMessagePassing(dir) {
+export function collectMessagePassing(dir, manifest = {}) {
   const senders = [];
   const listeners = [];
   const jsFiles = walkFiles(dir, { extensions: ['.js'] });
+  const sourceType = manifest?.background?.type === 'module' ? 'module' : 'script';
 
   for (const file of jsFiles) {
     if (isSupersededByUnpack(file) || isWakaruOutput(file) || isHumanifyOutput(file)) continue;
     const rel = relPath(dir, file);
     const content = readFileSync(file, 'utf8');
+
+    let program = null;
+    try {
+      program = acorn.parse(content, { ecmaVersion: 'latest', sourceType, allowReturnOutsideFunction: true });
+    } catch {
+      program = null;
+    }
 
     SEND_MESSAGE_CALL_RE.lastIndex = 0;
     let m;
@@ -297,7 +474,8 @@ export function collectMessagePassing(dir) {
 
     ADD_LISTENER_RE.lastIndex = 0;
     while ((m = ADD_LISTENER_RE.exec(content)) !== null) {
-      listeners.push({ file: rel, line: lineOf(content, m.index), kind: m[1], discriminants: extractDiscriminants(content, m.index) });
+      const calls = program ? buildCallGraphFromProgram(program, m.index) : [{ kind: 'unparseable' }];
+      listeners.push({ file: rel, line: lineOf(content, m.index), kind: m[1], discriminants: extractDiscriminants(content, m.index), calls });
     }
   }
 
@@ -314,7 +492,7 @@ export function collectMessagePassing(dir) {
       const unique = shared.every((d) => senderCounts.get(d) === 1 && listenerCounts.get(d) === 1);
       candidates.push({
         sender: { file: sender.file, line: sender.line, kind: sender.kind },
-        listener: { file: listener.file, line: listener.line, kind: listener.kind },
+        listener: { file: listener.file, line: listener.line, kind: listener.kind, calls: listener.calls },
         discriminants: shared,
         confidence: unique ? 'exact' : 'probable',
       });
@@ -336,7 +514,7 @@ export function collectMessagePassing(dir) {
     if (matchedListeners.has(li)) return;
     candidates.push({
       sender: null,
-      listener: { file: listener.file, line: listener.line, kind: listener.kind },
+      listener: { file: listener.file, line: listener.line, kind: listener.kind, calls: listener.calls },
       discriminants: listener.discriminants,
       confidence: 'ambiguous',
     });
@@ -442,7 +620,7 @@ export function auditExtension(dir, manifest, summary) {
   const findings = scanSource(dir);
   const endpoints = collectEndpoints(dir);
   const endpointDetails = collectEndpointDetails(dir);
-  const messagePassing = collectMessagePassing(dir);
+  const messagePassing = collectMessagePassing(dir, manifest);
   const flags = manifestFlags(summary);
   const correlations = correlatePermissionsAndFindings(permissions, findings);
   const risk = computeRisk(permissions, findings, summary, flags, correlations);
