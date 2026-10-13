@@ -128,3 +128,45 @@ chrome.runtime.onMessage.addListener((msg) => {
     { name: 'chrome.storage.local.set', kind: 'chrome-api', path: ['(anonymous)', 'chrome.storage.local.set'] },
   ]);
 });
+
+test('buildHandlerCallGraph follows a call into a local top-level function (multi-hop)', () => {
+  const source = `
+function processRequest(msg) {
+  fetch('https://api.example.com/x');
+}
+chrome.runtime.onMessage.addListener((msg) => {
+  processRequest(msg);
+});
+`;
+  const calls = buildHandlerCallGraph(source, listenerIndex(source));
+  assert.deepEqual(calls, [
+    { name: 'fetch', kind: 'network', path: ['(anonymous)', 'processRequest', 'fetch'] },
+  ]);
+});
+
+test('buildHandlerCallGraph follows a call into a const-assigned arrow function', () => {
+  const source = `
+const processRequest = (msg) => {
+  chrome.storage.local.set({ last: msg });
+};
+chrome.runtime.onMessage.addListener((msg) => {
+  processRequest(msg);
+});
+`;
+  const calls = buildHandlerCallGraph(source, listenerIndex(source));
+  assert.deepEqual(calls, [
+    { name: 'chrome.storage.local.set', kind: 'chrome-api', path: ['(anonymous)', 'processRequest', 'chrome.storage.local.set'] },
+  ]);
+});
+
+test('buildHandlerCallGraph reports a call to an unresolvable bare identifier as unresolved', () => {
+  const source = `
+chrome.runtime.onMessage.addListener((msg) => {
+  doSomethingUndefined(msg);
+});
+`;
+  const calls = buildHandlerCallGraph(source, listenerIndex(source));
+  assert.deepEqual(calls, [
+    { name: 'doSomethingUndefined', kind: 'unresolved', path: ['(anonymous)', 'doSomethingUndefined'] },
+  ]);
+});
