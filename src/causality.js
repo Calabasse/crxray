@@ -5,11 +5,11 @@
 // - 'message-pair' (exact): a sent message and the first later received event with the exact
 //   same content. This is the same idea as mechanism.js's static sender/listener matching, at
 //   the individual-event level.
-// - 'same-session-proximity' (probable): within the same CDP session, a storage write or an
-//   outgoing network request soon after a message-received or an earlier storage event is
-//   plausibly its effect. This is a real heuristic, not a proven trace -- it is never reported
-//   as 'exact', matching this project's own discipline of never converting a correlation into
-//   a stronger claim than the evidence supports.
+// - 'same-session-proximity' (probable): within the same CDP session, a storage write, a crypto
+//   operation, or an outgoing network request soon after a message-received event, an earlier
+//   storage event, or a crypto operation is plausibly its effect. This is a real heuristic, not
+//   a proven trace -- it is never reported as 'exact', matching this project's own discipline of
+//   never converting a correlation into a stronger claim than the evidence supports.
 
 // How soon counts as "soon" for the same-session heuristic. Not a universal constant -- a
 // documented, honest budget, same spirit as this file's siblings' own proximity windows
@@ -42,12 +42,17 @@ function buildMessagePairEdges(events) {
   return edges;
 }
 
+// R15: a crypto op (digest/sign/verify/encrypt/decrypt) is a same-session-proximity trigger and
+// effect too, same as storage already was -- a sign() call followed by a fetch() carrying its
+// output is exactly the signing-mechanism shape this heuristic exists to surface, and a received
+// message or storage read triggering a crypto op (sign the data you just got) is the same shape
+// in the other direction.
 function isProximityTrigger(e) {
-  return (e.kind === 'message' && e.direction === 'received') || e.kind === 'storage';
+  return (e.kind === 'message' && e.direction === 'received') || e.kind === 'storage' || e.kind === 'crypto';
 }
 
 function isProximityEffect(e) {
-  return e.kind === 'storage' || (e.kind === 'network' && e.direction === 'request');
+  return e.kind === 'storage' || e.kind === 'crypto' || (e.kind === 'network' && e.direction === 'request');
 }
 
 function buildSameSessionProximityEdges(events) {

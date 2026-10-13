@@ -93,3 +93,36 @@ test('buildCausalityEdges ignores events with no sessionId for proximity linking
 test('buildCausalityEdges returns an empty array for an empty event list', () => {
   assert.deepEqual(buildCausalityEdges([]), []);
 });
+
+test('buildCausalityEdges links a crypto operation to the network request it triggers', () => {
+  const events = [
+    { seq: 0, ts: 1000, kind: 'crypto', sessionId: 'sw', method: 'sign', algorithm: 'HMAC' },
+    { seq: 1, ts: 1010, kind: 'network', direction: 'request', sessionId: 'sw', url: 'https://api.example.com/x' },
+  ];
+  const edges = buildCausalityEdges(events);
+  assert.deepEqual(edges.filter((e) => e.basis === 'same-session-proximity'), [
+    { from: 0, to: 1, basis: 'same-session-proximity', confidence: 'probable' },
+  ]);
+});
+
+test('buildCausalityEdges links a storage write to an earlier same-session crypto operation', () => {
+  const events = [
+    { seq: 0, ts: 1000, kind: 'crypto', sessionId: 'sw', method: 'digest', algorithm: 'SHA-256' },
+    { seq: 1, ts: 1010, kind: 'storage', sessionId: 'sw', area: 'local', method: 'set', value: { a: 1 } },
+  ];
+  const edges = buildCausalityEdges(events);
+  assert.deepEqual(edges.filter((e) => e.basis === 'same-session-proximity'), [
+    { from: 0, to: 1, basis: 'same-session-proximity', confidence: 'probable' },
+  ]);
+});
+
+test('buildCausalityEdges links a crypto operation to an earlier same-session message-received event', () => {
+  const events = [
+    { seq: 0, ts: 1000, kind: 'message', direction: 'received', sessionId: 'sw', message: { type: 'SIGN_THIS' } },
+    { seq: 1, ts: 1010, kind: 'crypto', sessionId: 'sw', method: 'sign', algorithm: 'HMAC' },
+  ];
+  const edges = buildCausalityEdges(events);
+  assert.deepEqual(edges.filter((e) => e.basis === 'same-session-proximity'), [
+    { from: 0, to: 1, basis: 'same-session-proximity', confidence: 'probable' },
+  ]);
+});

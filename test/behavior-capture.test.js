@@ -141,6 +141,19 @@ describe('captureBehavior captures pre-execution service-worker storage writes, 
     );
   }
 
+  // R15: a crypto operation is a timeline trigger/effect too (same-session-proximity), same
+  // mechanism as storage/message. The fixture's digest() chains its own fetch() inside .then(),
+  // so the signed-probe request is guaranteed to come strictly after the digest's own report --
+  // a hard assertion, not conditional, since the ordering is deterministic by construction.
+  const signedProbeRequest = networkEvents.find((e) => e.direction === 'request' && e.url.includes('signed-probe'));
+  assert.ok(signedProbeRequest, 'the fetch chained inside digest().then() is captured');
+  assert.ok(
+    onDisk.timeline.edges.some(
+      (e) => e.from === digestEvent.seq && e.to === signedProbeRequest.seq && e.basis === 'same-session-proximity' && e.confidence === 'probable'
+    ),
+    'the crypto digest links to the fetch it triggers, same heuristic already proven for storage/message'
+  );
+
   rmSync(outDir, { recursive: true, force: true });
 });
 
