@@ -44,7 +44,7 @@
     },
     "mechanism": {
       "type": "object",
-      "description": "Cross-references audit.js's static message-passing/endpoint maps against this run's events. A static finding with no runtime match stays listed, tagged confirmedAtRuntime: false -- never dropped.",
+      "description": "Cross-references audit.js's static message-passing/endpoint maps against this run's events. A static finding with no runtime match stays listed, tagged confirmedAtRuntime: false -- never dropped. A messages[].listener entry carries the message-handler call graph's calls field when present (sourced from audit.js collectMessagePassing, not added by mechanism.js itself).",
       "properties": {
         "endpoints": {
           "type": "array",

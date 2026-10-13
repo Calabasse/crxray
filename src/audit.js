@@ -255,6 +255,10 @@ const MESSAGE_DISCRIMINANT_PROXIMITY_CHARS = 150;
 // calls, same-file only -- see the spec's "Known limitations" for exactly what this does
 // not attempt (alias tracking, nested-closure resolution, cross-file resolution).
 const CALL_GRAPH_MAX_DEPTH = 4;
+// A hard ceiling on output size, independent of the depth cap and the dedup in
+// buildCallGraphFromProgram -- in case a shape neither of those anticipates still produces an
+// extreme number of distinct leaves.
+const CALL_GRAPH_MAX_RESULTS = 200;
 const NETWORK_CALLEE_NAMES = new Set(['fetch']);
 const NETWORK_CONSTRUCTOR_NAMES = new Set(['XMLHttpRequest', 'WebSocket']);
 
@@ -304,9 +308,11 @@ function dottedChain(node) {
 // Finds every top-level (file-scope) named function this file declares, by the two shapes
 // that matter: `function foo() {}` and `const foo = function/(...)=>{}`. Deliberately not
 // recursive into nested scopes -- see the spec's "No nested-closure scope resolution".
+// `export function foo() {}` / `export const foo = ...` / `export default function foo() {}`
+// wrap the same declaration in an Export*Declaration; those are unwrapped and checked the same way.
 function collectTopLevelFunctions(programBody) {
   const map = new Map();
-  for (const stmt of programBody) {
+  function addDeclaration(stmt) {
     if (stmt.type === 'FunctionDeclaration' && stmt.id) {
       map.set(stmt.id.name, stmt);
     } else if (stmt.type === 'VariableDeclaration') {
@@ -319,6 +325,13 @@ function collectTopLevelFunctions(programBody) {
           map.set(decl.id.name, decl.init);
         }
       }
+    }
+  }
+  for (const stmt of programBody) {
+    if ((stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportDefaultDeclaration') && stmt.declaration) {
+      addDeclaration(stmt.declaration);
+    } else {
+      addDeclaration(stmt);
     }
   }
   return map;
@@ -356,7 +369,13 @@ function classifyCall(node) {
  */
 function buildCallGraphFromProgram(program, matchIndex) {
   const allCalls = deepCollectCallSites(program);
-  const callExprAtMatch = allCalls.find((n) => n.type === 'CallExpression' && n.callee.start === matchIndex);
+  const callExprAtMatch = allCalls.find(
+    (n) =>
+      n.type === 'CallExpression' &&
+      n.callee.start === matchIndex &&
+      n.callee.type === 'MemberExpression' &&
+      n.callee.property?.name === 'addListener'
+  );
   if (!callExprAtMatch) return [{ kind: 'unresolved' }];
 
   const topLevelFns = collectTopLevelFunctions(program.body);
@@ -371,28 +390,67 @@ function buildCallGraphFromProgram(program, matchIndex) {
     startNode = firstArg;
     startName = firstArg.id?.name ?? '(anonymous)';
   }
-  if (!startNode) return [{ kind: 'unresolved', name: firstArg?.name, path: [startName] }];
+  if (!startNode) {
+    // A member-expression reference (addListener(obj.handler)) still has a real name to report.
+    const chain = firstArg?.type === 'MemberExpression' ? dottedChain(firstArg) : null;
+    if (chain) return [{ kind: 'unresolved', name: chain, path: [chain] }];
+    return [{ kind: 'unresolved', name: firstArg?.name, path: [startName] }];
+  }
 
+  // Output is bounded by distinct (kind, name) pairs, not by the number of paths through the
+  // graph: a flat bundle where every function calls every function in the next layer would
+  // otherwise yield one entry per path (measured: millions). seenLeaves dedups entries;
+  // fullyExpanded skips re-walking a function whose subtree was already walked to completion.
+  // fullyExpanded maps each function to the path length it was walked at: a walk at a deeper
+  // point had less depth budget and may have cut callees off at the cap, so it only covers a
+  // later call reached at the same depth or deeper. Each function is walked at most once per
+  // depth level, which keeps the work bounded without hiding leaves a shallower path reaches.
   const results = [];
+  const seenLeaves = new Set();
+  const fullyExpanded = new Map();
+  let truncated = false;
+  function record(entry) {
+    if (truncated) return;
+    const key = `${entry.kind}:${entry.name}`;
+    if (seenLeaves.has(key)) return;
+    // Checked after dedup so 'truncated' only appears when a genuinely new entry is dropped.
+    if (results.length >= CALL_GRAPH_MAX_RESULTS) {
+      results.push({ kind: 'truncated' });
+      truncated = true;
+      return;
+    }
+    seenLeaves.add(key);
+    results.push(entry);
+  }
+
   function walk(fnNode, path, visited) {
+    // A call to one of this function's own parameters (e.g. a minifier-renamed sendResponse)
+    // must not resolve to an unrelated same-named top-level function. Identifier params only:
+    // narrow by design, not full scope analysis.
+    const ownParamNames = new Set(fnNode.params.filter((p) => p.type === 'Identifier').map((p) => p.name));
     for (const callNode of deepCollectCallSites(fnNode.body)) {
       const classified = classifyCall(callNode);
       if (!classified) continue;
 
       if (classified.kind !== 'identifier') {
-        results.push({ name: classified.name, kind: classified.kind, path: [...path, classified.name] });
+        record({ name: classified.name, kind: classified.kind, path: [...path, classified.name] });
         continue;
       }
 
-      const target = topLevelFns.get(classified.name);
+      const target = ownParamNames.has(classified.name) ? undefined : topLevelFns.get(classified.name);
       if (!target) {
-        results.push({ name: classified.name, kind: 'unresolved', path: [...path, classified.name] });
+        record({ name: classified.name, kind: 'unresolved', path: [...path, classified.name] });
       } else if (visited.has(target)) {
-        results.push({ name: classified.name, kind: 'cycle', path: [...path, classified.name] });
+        record({ name: classified.name, kind: 'cycle', path: [...path, classified.name] });
+      } else if (fullyExpanded.has(target) && fullyExpanded.get(target) <= path.length + 1) {
+        continue;
       } else if (path.length >= CALL_GRAPH_MAX_DEPTH) {
-        results.push({ name: classified.name, kind: 'depth-limit', path: [...path, classified.name] });
+        record({ name: classified.name, kind: 'depth-limit', path: [...path, classified.name] });
       } else {
-        walk(target, [...path, classified.name], new Set([...visited, target]));
+        const targetPath = [...path, classified.name];
+        walk(target, targetPath, new Set([...visited, target]));
+        const prior = fullyExpanded.get(target);
+        if (prior === undefined || targetPath.length < prior) fullyExpanded.set(target, targetPath.length);
       }
     }
   }
@@ -459,11 +517,17 @@ export function collectMessagePassing(dir, manifest = {}) {
     const rel = relPath(dir, file);
     const content = readFileSync(file, 'utf8');
 
+    // Parse only files that actually register a listener; most vendor bundles don't.
     let program = null;
-    try {
-      program = acorn.parse(content, { ecmaVersion: 'latest', sourceType, allowReturnOutsideFunction: true });
-    } catch {
-      program = null;
+    ADD_LISTENER_RE.lastIndex = 0;
+    const hasListener = ADD_LISTENER_RE.test(content);
+    ADD_LISTENER_RE.lastIndex = 0;
+    if (hasListener) {
+      try {
+        program = acorn.parse(content, { ecmaVersion: 'latest', sourceType, allowReturnOutsideFunction: true });
+      } catch {
+        program = null;
+      }
     }
 
     SEND_MESSAGE_CALL_RE.lastIndex = 0;
@@ -474,7 +538,17 @@ export function collectMessagePassing(dir, manifest = {}) {
 
     ADD_LISTENER_RE.lastIndex = 0;
     while ((m = ADD_LISTENER_RE.exec(content)) !== null) {
-      const calls = program ? buildCallGraphFromProgram(program, m.index) : [{ kind: 'unparseable' }];
+      let calls;
+      if (!program) {
+        calls = [{ kind: 'unparseable' }];
+      } else {
+        // Never let one pathological listener (e.g. a stack overflow on an extreme AST) kill the pass.
+        try {
+          calls = buildCallGraphFromProgram(program, m.index);
+        } catch {
+          calls = [{ kind: 'unparseable' }];
+        }
+      }
       listeners.push({ file: rel, line: lineOf(content, m.index), kind: m[1], discriminants: extractDiscriminants(content, m.index), calls });
     }
   }
