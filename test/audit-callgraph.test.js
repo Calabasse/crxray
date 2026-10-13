@@ -79,3 +79,52 @@ chrome.runtime.onMessage.addListener((msg) => {
     { name: 'chrome.storage.local.set', kind: 'chrome-api', path: ['(anonymous)', 'chrome.storage.local.set'] },
   ]);
 });
+
+test('buildHandlerCallGraph classifies a bare fetch() call as network', () => {
+  const source = `
+chrome.runtime.onMessage.addListener((msg) => {
+  fetch('https://api.example.com/sync', { method: 'POST' });
+});
+`;
+  const calls = buildHandlerCallGraph(source, listenerIndex(source));
+  assert.deepEqual(calls, [{ name: 'fetch', kind: 'network', path: ['(anonymous)', 'fetch'] }]);
+});
+
+test('buildHandlerCallGraph classifies new XMLHttpRequest()/new WebSocket() as network', () => {
+  const source = `
+chrome.runtime.onMessage.addListener((msg) => {
+  new XMLHttpRequest();
+  new WebSocket('wss://example.com');
+});
+`;
+  const calls = buildHandlerCallGraph(source, listenerIndex(source));
+  assert.deepEqual(calls, [
+    { name: 'XMLHttpRequest', kind: 'network', path: ['(anonymous)', 'XMLHttpRequest'] },
+    { name: 'WebSocket', kind: 'network', path: ['(anonymous)', 'WebSocket'] },
+  ]);
+});
+
+test('buildHandlerCallGraph reports an arbitrary member-expression call as unresolved, not recursed into', () => {
+  const source = `
+chrome.runtime.onMessage.addListener((msg) => {
+  someLocalObject.doSomething(msg);
+});
+`;
+  const calls = buildHandlerCallGraph(source, listenerIndex(source));
+  assert.deepEqual(calls, [
+    { name: 'someLocalObject.doSomething', kind: 'unresolved', path: ['(anonymous)', 'someLocalObject.doSomething'] },
+  ]);
+});
+
+test('buildHandlerCallGraph does not report an uninteresting constructor call at all (not even as unresolved)', () => {
+  const source = `
+chrome.runtime.onMessage.addListener((msg) => {
+  const m = new Map();
+  chrome.storage.local.set({ size: m.size });
+});
+`;
+  const calls = buildHandlerCallGraph(source, listenerIndex(source));
+  assert.deepEqual(calls, [
+    { name: 'chrome.storage.local.set', kind: 'chrome-api', path: ['(anonymous)', 'chrome.storage.local.set'] },
+  ]);
+});
