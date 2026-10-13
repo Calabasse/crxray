@@ -229,3 +229,38 @@ test('buildHandlerCallGraph reports unresolved when the listener reference has n
   const calls = buildHandlerCallGraph(source, listenerIndex(source));
   assert.deepEqual(calls, [{ kind: 'unresolved', name: 'someImportedHandler', path: ['someImportedHandler'] }]);
 });
+
+test('collectMessagePassing parses an ES module service worker without choking on import/export', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-callgraph-'));
+  makeFiles(dir, {
+    'sw.js': `
+import { helper } from './helper.js';
+chrome.runtime.onMessage.addListener((msg) => {
+  chrome.storage.local.set({ ok: true });
+});
+export const unused = 1;
+`,
+  });
+  const map = collectMessagePassing(dir, { background: { type: 'module' } });
+  const entry = map.find((c) => c.listener);
+  assert.deepEqual(entry.listener.calls, [
+    { name: 'chrome.storage.local.set', kind: 'chrome-api', path: ['(anonymous)', 'chrome.storage.local.set'] },
+  ]);
+});
+
+test('collectMessagePassing defaults to script sourceType when manifest has no background key at all', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-callgraph-'));
+  makeFiles(dir, {
+    'content.js': `
+chrome.runtime.onMessage.addListener((msg) => {
+  chrome.storage.local.set({ ok: true });
+});
+`,
+  });
+  assert.doesNotThrow(() => collectMessagePassing(dir, {}));
+  const map = collectMessagePassing(dir, {});
+  const entry = map.find((c) => c.listener);
+  assert.deepEqual(entry.listener.calls, [
+    { name: 'chrome.storage.local.set', kind: 'chrome-api', path: ['(anonymous)', 'chrome.storage.local.set'] },
+  ]);
+});
