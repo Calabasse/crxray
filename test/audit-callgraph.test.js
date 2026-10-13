@@ -170,3 +170,43 @@ chrome.runtime.onMessage.addListener((msg) => {
     { name: 'doSomethingUndefined', kind: 'unresolved', path: ['(anonymous)', 'doSomethingUndefined'] },
   ]);
 });
+
+test('buildHandlerCallGraph detects direct self-recursion as a cycle, not an infinite loop', () => {
+  const source = `
+function a() { a(); }
+chrome.runtime.onMessage.addListener((msg) => {
+  a();
+});
+`;
+  const calls = buildHandlerCallGraph(source, listenerIndex(source));
+  assert.deepEqual(calls, [{ name: 'a', kind: 'cycle', path: ['(anonymous)', 'a', 'a'] }]);
+});
+
+test('buildHandlerCallGraph detects mutual recursion (A calls B calls A) as a cycle', () => {
+  const source = `
+function a() { b(); }
+function b() { a(); }
+chrome.runtime.onMessage.addListener((msg) => {
+  a();
+});
+`;
+  const calls = buildHandlerCallGraph(source, listenerIndex(source));
+  assert.deepEqual(calls, [{ name: 'a', kind: 'cycle', path: ['(anonymous)', 'a', 'b', 'a'] }]);
+});
+
+test('buildHandlerCallGraph stops at the 4-hop depth cap, naming it, rather than silently truncating', () => {
+  const source = `
+function f1() { f2(); }
+function f2() { f3(); }
+function f3() { f4(); }
+function f4() { f5(); }
+function f5() { fetch('https://x'); }
+chrome.runtime.onMessage.addListener((msg) => {
+  f1();
+});
+`;
+  const calls = buildHandlerCallGraph(source, listenerIndex(source));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].kind, 'depth-limit');
+  assert.ok(!calls.some((c) => c.name === 'fetch'), 'f5/fetch is never reached -- the cap actually stopped recursion');
+});
