@@ -34,8 +34,21 @@ const MEDIUM_RISK_PERMISSIONS = new Set([
 
 const SUSPICIOUS_PATTERNS = [
   { id: 'eval', label: 'eval()', re: /\beval\s*\(/g, severity: 'high' },
-  { id: 'function-constructor', label: 'new Function()', re: /\bnew\s+Function\s*\(/g, severity: 'high' },
+  // Matches both `new Function(...)` and a bare `Function(...)` call --
+  // the latter runs identically to the former for this purpose and was a
+  // confirmed total blind spot (red-team finding) when `new` was required.
+  // The optional `new\s+` group means a real `new Function(` still counts
+  // once, not twice: the engine consumes it as a single match.
+  { id: 'function-constructor', label: 'Function() constructor', re: /\b(?:new\s+)?Function\s*\(/g, severity: 'high' },
   { id: 'atob', label: 'atob() decoding', re: /\batob\s*\(/g, severity: 'medium' },
+  // setTimeout(decodedPayload, 0)/setInterval(...) implicitly execute a
+  // string argument exactly like eval() does. There was previously zero
+  // pattern coverage for either call at all -- a confirmed total blind
+  // spot (red-team finding), not just a miss on the entropy-companion
+  // pairing below. Low severity: both calls are ubiquitous and almost
+  // always benign on their own; the real signal is pairing with a nearby
+  // high-entropy literal, same as atob.
+  { id: 'settimeout-string', label: 'setTimeout()/setInterval()', re: /\b(?:setTimeout|setInterval)\s*\(/g, severity: 'low' },
   { id: 'document-write', label: 'document.write()', re: /\bdocument\.write\s*\(/g, severity: 'medium' },
   { id: 'chrome-cookies', label: 'chrome.cookies access', re: /\b(?:chrome|browser)\.cookies\b/g, severity: 'high' },
   { id: 'chrome-webRequest', label: 'chrome.webRequest access', re: /\b(?:chrome|browser)\.webRequest\b/g, severity: 'high' },
@@ -176,23 +189,40 @@ const ENTROPY_THRESHOLD = 6.0;
 const BASE64ISH_RE = /^[A-Za-z0-9+/=\s]+$/;
 
 // A high-entropy literal only gets reported when a decode/execute call --
-// eval, new Function, atob, a dynamically-created <script> tag -- appears
-// within this many characters of it in the SAME file. A bare embedded blob
-// with no decode step nearby is almost always a legitimate asset (a font,
-// an embedded protobuf schema); real obfuscated payloads pair the blob with
-// exactly this kind of decode-and-run step close to where it's used. An
-// earlier, file-wide version of this check (any companion match anywhere in
-// the file) was found by independent review to still flag a legitimate
-// embedded font sitting anywhere near an unrelated atob() call elsewhere in
-// the same bundle -- the same false-positive class the file-wide check was
-// meant to fix, just moved rather than closed. This is a real but partial
-// mitigation, not an evasion-proof one: `(0,eval)(x)`, `window["eval"](x)`,
-// `Function(x)()` without `new`, `setTimeout(x, 0)`, and decoding in one
-// file to execute in another are all known to slip past it; closing those
-// needs real control-flow analysis (see the sandboxed-execution item in the
-// project's own backlog), not a wider regex.
+// eval, Function() (with or without new), atob, setTimeout/setInterval, or
+// a dynamically-created <script> tag -- appears within this many characters
+// of it in the SAME file. A bare embedded blob with no decode step nearby
+// is almost always a legitimate asset (a font, an embedded protobuf
+// schema); real obfuscated payloads pair the blob with exactly this kind of
+// decode-and-run step close to where it's used. An earlier, file-wide
+// version of this check (any companion match anywhere in the file) was
+// found by independent review to still flag a legitimate embedded font
+// sitting anywhere near an unrelated atob() call elsewhere in the same
+// bundle -- the same false-positive class the file-wide check was meant to
+// fix, just moved rather than closed. This is a real but partial
+// mitigation, not an evasion-proof one. A red-team pass measured the actual
+// gaps against the real CLI (not just read the code): `Function(x)()`
+// without `new` and `setTimeout`/`setInterval` were confirmed TOTAL blind
+// spots (no SUSPICIOUS_PATTERNS entry could ever catch them, regardless of
+// entropy) and both are now closed above. `(0,eval)(x)` and
+// `window["eval"](x)` -- indirect eval via the comma operator or a
+// bracket-indexed property lookup -- are confirmed to still slip past,
+// judged not worth chasing with a narrower regex (trivially varied around
+// by the next indirection). Decoding in one file to execute in another is
+// also confirmed real, but narrower than it sounds: it only defeats the
+// pairing when the decode call ITSELF also avoids every companion pattern
+// id, since `companionPositions` below is rebuilt fresh per file -- pairing
+// is architecturally per-file, so no proximity-window tuning could close
+// this; it needs real cross-file data-flow tracking (see the
+// sandboxed-execution item in the project's own backlog).
 const ENTROPY_PROXIMITY_CHARS = 500;
-const ENTROPY_COMPANION_PATTERN_IDS = new Set(['eval', 'function-constructor', 'atob', 'external-script-tag']);
+const ENTROPY_COMPANION_PATTERN_IDS = new Set([
+  'eval',
+  'function-constructor',
+  'atob',
+  'external-script-tag',
+  'settimeout-string',
+]);
 
 // Safe against catastrophic backtracking: each alternative's negated class
 // excludes backslash, which the escaped-char alternative requires, so the

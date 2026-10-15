@@ -470,6 +470,78 @@ test('entropy check does not flag an embedded font sitting near an UNRELATED dec
   rmSync(dir, { recursive: true });
 });
 
+test('scanSource flags Function() called without new, the same as new Function()', () => {
+  // Red-team finding, confirmed by running the real CLI against a built
+  // fixture, not assumed: dropping `new` defeated the function-constructor
+  // pattern entirely -- a confirmed total blind spot, since Function(x)()
+  // runs identically to new Function(x)() for this purpose. Widened to
+  // match both forms as ONE pattern, so a real `new Function()` call is
+  // still counted exactly once, not twice.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'bare.js': 'const run = Function("return 1+1"); run();',
+      'withnew.js': 'const run = new Function("return 1+1"); run();',
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const hits = audit.findings.filter((f) => f.pattern === 'Function() constructor');
+  assert.equal(hits.filter((f) => f.file === 'bare.js').length, 1);
+  assert.equal(hits.filter((f) => f.file === 'withnew.js').length, 1);
+  rmSync(dir, { recursive: true });
+});
+
+test('scanSource flags setTimeout()/setInterval() calls', () => {
+  // Red-team finding: setTimeout(decodedPayload, 0) implicitly executes a
+  // string argument exactly like eval() does, and the pattern list had
+  // zero coverage for setTimeout/setInterval at all -- confirmed as a total
+  // blind spot by running the real CLI, not just a miss on the entropy
+  // companion pairing below. Flagged at low severity, same tier as
+  // fetch()/XMLHttpRequest: ubiquitous and usually benign on its own.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'bg.js': ['setTimeout(doStuff, 100);', 'setInterval(poll, 5000);'].join('\n'),
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const patterns = audit.findings.map((f) => f.pattern);
+  assert.equal(patterns.filter((p) => p === 'setTimeout()/setInterval()').length, 2);
+  rmSync(dir, { recursive: true });
+});
+
+test('entropy check recognizes setTimeout()/setInterval() as a decode-companion, closing a confirmed red-team gap', () => {
+  // Confirmed by direct red-team testing against the real CLI:
+  // setTimeout(decodedPayload, 0) is invisible to the entropy-companion
+  // pairing because setTimeout/setInterval had no SUSPICIOUS_PATTERNS entry
+  // at all, so no companion position could ever be recorded near the
+  // literal. Now a companion pattern, same tier as atob.
+  const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
+  const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
+  const summary = summarizeManifest(manifest);
+  const base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const highEntropy = Array.from({ length: 1280 }, (_, i) => base64Alphabet[(i * 17) % base64Alphabet.length]).join('');
+  makeExtension(dir, {
+    manifest,
+    files: {
+      'blob.js': `const payload = "${highEntropy}"; setTimeout(payload, 0);`,
+    },
+  });
+
+  const audit = auditExtension(dir, manifest, summary);
+  const entropyHits = audit.findings.filter((f) => f.pattern === 'High entropy (possible obfuscation)');
+  assert.ok(entropyHits.some((f) => f.file === 'blob.js'));
+  rmSync(dir, { recursive: true });
+});
+
 test('scanSource flags affiliate link injection and review-nagging URLs', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crxray-audit-'));
   const manifest = { name: 'Ext', version: '1.0.0', manifest_version: 3, permissions: [], background: { service_worker: 'bg.js' } };
